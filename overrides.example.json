@@ -1,0 +1,5 @@
+{
+  "_comment": "Copy to data/overrides.json. Keys are exact folder names from your library; values are TMDB movie ids, or null to hide the folder from the UI. Remove this _comment key.",
+  "Black Panther": 284054,
+  "Star Wars Episode I, II, III, IV, V, VI - Complete Saga George Lucas Eng Subs 720p [H264-mp4]": null
+}
