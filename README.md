@@ -48,6 +48,14 @@ python manage.py serve     # http://127.0.0.1:8000
 The **Sync**, **Retry unmatched** and **Force refetch** buttons in the UI do the same three things,
 with a live progress bar.
 
+### Browsing
+
+Search covers title, original title, tagline, director, cast, genre and folder name. Sort by
+title, year, rating, vote count, popularity, runtime, copies on disk or date added — each with an
+ascending/descending toggle next to the picker. Choosing a field resets to its natural direction
+(titles A→Z, everything else best or newest first); the toggle then flips it. Films with no value
+for the chosen field always sort to the end, in either direction.
+
 ## How caching works
 
 `data/cache.json` is keyed by folder name:

@@ -5,8 +5,8 @@ import MovieCard from './components/MovieCard'
 import MovieModal from './components/MovieModal'
 import Toolbar from './components/Toolbar'
 import type { CacheEntry, CacheFile, MovieGroup, SyncStatus } from './types'
-import { groupEntries, searchMatches, sortGroups } from './util'
-import type { SortMode } from './util'
+import { DEFAULT_DIRECTION, groupEntries, searchMatches, sortGroups } from './util'
+import type { SortDirection, SortMode } from './util'
 
 const EMPTY: CacheFile = { schema_version: 1, synced_at: '', image_base_url: '', entries: {} }
 
@@ -17,6 +17,13 @@ export default function App() {
 
   const [query, setQuery] = createSignal('')
   const [sort, setSort] = createSignal<SortMode>('title')
+  const [direction, setDirection] = createSignal<SortDirection>(DEFAULT_DIRECTION.title)
+
+  // Picking a new field resets to its natural direction; the toggle then flips it.
+  const chooseSort = (mode: SortMode) => {
+    setSort(mode)
+    setDirection(DEFAULT_DIRECTION[mode])
+  }
   const [genre, setGenre] = createSignal('')
   const [issuesOnly, setIssuesOnly] = createSignal(false)
   const [selected, setSelected] = createSignal<string | null>(null)
@@ -97,7 +104,7 @@ export default function App() {
       if (chosenGenre && !group.genres.includes(chosenGenre)) return false
       return searchMatches(group, query())
     })
-    return sortGroups(filtered, sort())
+    return sortGroups(filtered, sort(), direction())
   })
 
   // Re-derive from the store so the modal reflects a fix applied inside it.
@@ -113,7 +120,9 @@ export default function App() {
         query={query()}
         onQuery={setQuery}
         sort={sort()}
-        onSort={setSort}
+        onSort={chooseSort}
+        direction={direction()}
+        onDirection={setDirection}
         genre={genre()}
         onGenre={setGenre}
         genres={genres()}

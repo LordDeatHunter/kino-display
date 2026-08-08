@@ -1,12 +1,14 @@
 import { For, Show } from 'solid-js'
 import type { SyncStatus } from '../types'
-import type { SortMode } from '../util'
+import type { SortDirection, SortMode } from '../util'
 
 interface Props {
   query: string
   onQuery: (value: string) => void
   sort: SortMode
   onSort: (value: SortMode) => void
+  direction: SortDirection
+  onDirection: (value: SortDirection) => void
   genre: string
   onGenre: (value: string) => void
   genres: string[]
@@ -20,16 +22,23 @@ interface Props {
   onSync: (mode: 'incremental' | 'force' | 'unmatched') => void
 }
 
-const SORTS: { value: SortMode; label: string }[] = [
-  { value: 'title', label: 'Title' },
-  { value: 'year', label: 'Year' },
-  { value: 'rating', label: 'Rating' },
-  { value: 'runtime', label: 'Runtime' },
-  { value: 'added', label: 'Recently added' },
+const SORTS: { value: SortMode; label: string; asc: string; desc: string }[] = [
+  { value: 'title', label: 'Title', asc: 'A → Z', desc: 'Z → A' },
+  { value: 'year', label: 'Year', asc: 'Oldest first', desc: 'Newest first' },
+  { value: 'rating', label: 'Rating', asc: 'Lowest first', desc: 'Highest first' },
+  { value: 'votes', label: 'Vote count', asc: 'Fewest first', desc: 'Most first' },
+  { value: 'popularity', label: 'Popularity', asc: 'Least first', desc: 'Most first' },
+  { value: 'runtime', label: 'Runtime', asc: 'Shortest first', desc: 'Longest first' },
+  { value: 'copies', label: 'Copies on disk', asc: 'Fewest first', desc: 'Most first' },
+  { value: 'added', label: 'Date added', asc: 'Oldest first', desc: 'Newest first' },
 ]
 
 export default function Toolbar(props: Props) {
   const running = () => props.status?.running ?? false
+  const directionLabel = () => {
+    const sort = SORTS.find((entry) => entry.value === props.sort) ?? SORTS[0]
+    return props.direction === 'asc' ? sort.asc : sort.desc
+  }
   const percent = () => {
     const status = props.status
     if (!status || !status.total) return 0
@@ -82,17 +91,46 @@ export default function Toolbar(props: Props) {
           onInput={(event) => props.onQuery(event.currentTarget.value)}
         />
 
-        <select value={props.genre} onChange={(event) => props.onGenre(event.currentTarget.value)}>
-          <option value="">All genres</option>
-          <For each={props.genres}>{(genre) => <option value={genre}>{genre}</option>}</For>
-        </select>
+        <div class="field">
+          <label class="field-label" for="genre-filter">
+            Genre
+          </label>
+          <select
+            id="genre-filter"
+            value={props.genre}
+            onChange={(event) => props.onGenre(event.currentTarget.value)}
+          >
+            <option value="">All genres</option>
+            <For each={props.genres}>{(genre) => <option value={genre}>{genre}</option>}</For>
+          </select>
+        </div>
 
-        <select
-          value={props.sort}
-          onChange={(event) => props.onSort(event.currentTarget.value as SortMode)}
-        >
-          <For each={SORTS}>{(sort) => <option value={sort.value}>{sort.label}</option>}</For>
-        </select>
+        <div class="field">
+          <label class="field-label" for="sort-field">
+            Sort by
+          </label>
+          {/* Field and direction are joined into one control so it reads as a
+              single "sort" widget rather than two unlabelled dropdowns. */}
+          <div class="control-group">
+            <select
+              id="sort-field"
+              value={props.sort}
+              onChange={(event) => props.onSort(event.currentTarget.value as SortMode)}
+            >
+              <For each={SORTS}>{(sort) => <option value={sort.value}>{sort.label}</option>}</For>
+            </select>
+            <button
+              type="button"
+              class="sort-dir"
+              title={`${directionLabel()} — click to reverse`}
+              aria-label={`Sort direction: ${directionLabel()}. Click to reverse.`}
+              onClick={() => props.onDirection(props.direction === 'asc' ? 'desc' : 'asc')}
+            >
+              <span class="sort-arrow">{props.direction === 'asc' ? '↑' : '↓'}</span>
+              <span class="sort-dir-label">{directionLabel()}</span>
+            </button>
+          </div>
+        </div>
 
         <label class="toggle">
           <input

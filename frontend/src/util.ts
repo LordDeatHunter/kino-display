@@ -71,20 +71,67 @@ export function searchMatches(group: MovieGroup, query: string): boolean {
   return needle.split(/\s+/).every((word) => haystack.includes(word))
 }
 
-export type SortMode = 'title' | 'year' | 'rating' | 'runtime' | 'added'
+export type SortMode =
+  | 'title'
+  | 'year'
+  | 'rating'
+  | 'votes'
+  | 'runtime'
+  | 'popularity'
+  | 'copies'
+  | 'added'
 
-export function sortGroups(groups: MovieGroup[], mode: SortMode): MovieGroup[] {
-  const sorted = [...groups]
-  switch (mode) {
-    case 'year':
-      return sorted.sort((a, b) => (b.year ?? 0) - (a.year ?? 0) || sortKey(a.title).localeCompare(sortKey(b.title)))
-    case 'rating':
-      return sorted.sort((a, b) => b.rating - a.rating || sortKey(a.title).localeCompare(sortKey(b.title)))
-    case 'runtime':
-      return sorted.sort((a, b) => (b.runtime ?? 0) - (a.runtime ?? 0))
-    case 'added':
-      return sorted.sort((a, b) => b.latestFetch.localeCompare(a.latestFetch))
-    default:
-      return sorted.sort((a, b) => sortKey(a.title).localeCompare(sortKey(b.title)))
-  }
+export type SortDirection = 'asc' | 'desc'
+
+/** How each field reads when you first pick it — titles A→Z, everything else best/newest first. */
+export const DEFAULT_DIRECTION: Record<SortMode, SortDirection> = {
+  title: 'asc',
+  year: 'desc',
+  rating: 'desc',
+  votes: 'desc',
+  runtime: 'desc',
+  popularity: 'desc',
+  copies: 'desc',
+  added: 'desc',
+}
+
+/** `null` means "no value" — those groups sink to the bottom in both directions. */
+const SORT_VALUE: Record<SortMode, (group: MovieGroup) => number | string | null> = {
+  title: (group) => sortKey(group.title),
+  year: (group) => group.year,
+  rating: (group) => group.rating || null,
+  votes: (group) => group.tmdb?.vote_count || null,
+  runtime: (group) => group.runtime,
+  popularity: (group) => group.tmdb?.popularity || null,
+  copies: (group) => group.entries.length,
+  added: (group) => group.latestFetch || null,
+}
+
+const byTitle = (a: MovieGroup, b: MovieGroup) => sortKey(a.title).localeCompare(sortKey(b.title))
+
+export function sortGroups(
+  groups: MovieGroup[],
+  mode: SortMode,
+  direction: SortDirection = DEFAULT_DIRECTION[mode],
+): MovieGroup[] {
+  const value = SORT_VALUE[mode] ?? SORT_VALUE.title
+  const flip = direction === 'desc' ? -1 : 1
+
+  return [...groups].sort((a, b) => {
+    const left = value(a)
+    const right = value(b)
+
+    if (left === null || right === null) {
+      if (left === right) return byTitle(a, b)
+      return left === null ? 1 : -1
+    }
+
+    const delta =
+      typeof left === 'string' && typeof right === 'string'
+        ? left.localeCompare(right)
+        : Number(left) - Number(right)
+
+    // Title stays the tie-break, always A→Z, so equal ratings read predictably.
+    return delta === 0 ? byTitle(a, b) : delta * flip
+  })
 }
