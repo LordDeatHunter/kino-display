@@ -6,7 +6,7 @@ import json
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import (
@@ -24,6 +24,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "config.json"
 
 DEFAULT_MOVIES_DIR = "../Movies"
+
+# The two libraries the app keeps side by side. Each has its own folders, cache and
+# overrides file, so syncing one can never disturb the other.
+MediaKind = Literal["movies", "series"]
+MEDIA_KINDS: tuple[MediaKind, ...] = ("movies", "series")
+
+KIND_LABELS: dict[MediaKind, str] = {"movies": "movie", "series": "series"}
 
 
 class _TolerantJsonSource(JsonConfigSettingsSource):
@@ -56,6 +63,12 @@ class Settings(BaseSettings):
         default_factory=lambda: [Path(DEFAULT_MOVIES_DIR)],
         validation_alias=AliasChoices("movies_dirs", "movies_dir"),
     )
+    # No built-in default: there is no sensible guess for where shows live, and an
+    # empty list reads as "not configured yet" in the launcher.
+    series_dirs: Annotated[list[Path], NoDecode] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("series_dirs", "series_dir"),
+    )
     data_dir: Path = Path("data")
 
     host: str = "127.0.0.1"
@@ -82,7 +95,7 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
-    @field_validator("movies_dirs", mode="before")
+    @field_validator("movies_dirs", "series_dirs", mode="before")
     @classmethod
     def _as_list(cls, value: Any) -> Any:
         """Accept a list of paths, or one string holding os.pathsep-separated paths."""
@@ -97,7 +110,7 @@ class Settings(BaseSettings):
     def _resolve(cls, value: Path) -> Path:
         return value if value.is_absolute() else (PROJECT_ROOT / value).resolve()
 
-    @field_validator("movies_dirs", mode="after")
+    @field_validator("movies_dirs", "series_dirs", mode="after")
     @classmethod
     def _resolve_each(cls, value: list[Path]) -> list[Path]:
         resolved: list[Path] = []
@@ -107,13 +120,25 @@ class Settings(BaseSettings):
                 resolved.append(full)
         return resolved
 
+    def library_dirs(self, kind: MediaKind = "movies") -> list[Path]:
+        return self.series_dirs if kind == "series" else self.movies_dirs
+
+    def cache_path_for(self, kind: MediaKind = "movies") -> Path:
+        # Movies keep the original filenames, so an existing install carries over.
+        suffix = "-series" if kind == "series" else ""
+        return self.data_dir / f"cache{suffix}.json"
+
+    def overrides_path_for(self, kind: MediaKind = "movies") -> Path:
+        suffix = "-series" if kind == "series" else ""
+        return self.data_dir / f"overrides{suffix}.json"
+
     @property
     def cache_path(self) -> Path:
-        return self.data_dir / "cache.json"
+        return self.cache_path_for("movies")
 
     @property
     def overrides_path(self) -> Path:
-        return self.data_dir / "overrides.json"
+        return self.overrides_path_for("movies")
 
     @property
     def images_dir(self) -> Path:
@@ -136,16 +161,17 @@ def get_settings() -> Settings:
     return Settings()
 
 
-def env_movies_dirs() -> list[str] | None:
-    """MOVIES_DIRS as supplied by the environment or .env — None if neither sets it.
+def env_library_dirs(kind: MediaKind = "movies") -> list[str] | None:
+    """MOVIES_DIRS/SERIES_DIRS from the environment or .env — None if neither sets it.
 
-    This is the default the first-run prompt falls back to; with no default, main.py
-    insists on the folder picker. Several folders are joined by os.pathsep, and the
-    old singular MOVIES_DIR still works.
+    This is the default the launcher falls back to when config.json has nothing for a
+    kind. Several folders are joined by os.pathsep, and the old singular MOVIES_DIR
+    still works.
     """
-    raw = os.environ.get("MOVIES_DIRS") or os.environ.get("MOVIES_DIR")
+    prefix = "SERIES" if kind == "series" else "MOVIES"
+    raw = os.environ.get(f"{prefix}_DIRS") or os.environ.get(f"{prefix}_DIR")
     if raw is None:
-        value = DotEnvSettingsSource(Settings)().get("movies_dirs")
+        value = DotEnvSettingsSource(Settings)().get(f"{prefix.lower()}_dirs")
         raw = value if isinstance(value, str) else None
     parts = [part.strip() for part in (raw or "").split(os.pathsep)]
     return [part for part in parts if part] or None

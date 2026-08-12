@@ -8,13 +8,16 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from .cache import load_cache, load_overrides, save_cache
-from .config import Settings
+from .config import MediaKind, Settings
 from .models import CacheEntry, CacheFile, ScannedEntry, SyncReport
 from .scanner import scan_libraries
 from .tmdb import TmdbClient, TmdbError
 
 CHECKPOINT_EVERY = 25
 LOW_CONFIDENCE_THRESHOLD = 0.75
+# Show folders usually carry no year, so "no year" alone would flag nearly every
+# series for review. For those, a near-exact title match is enough on its own.
+SERIES_NO_YEAR_THRESHOLD = 0.95
 
 ProgressCallback = Callable[[int, int, str], None]
 
@@ -88,7 +91,10 @@ async def _resolve(
         entry.status = "matched"
         entry.source = "search"
         entry.match_confidence = round(score, 3)
-        entry.low_confidence = score < LOW_CONFIDENCE_THRESHOLD or scanned.parsed_year is None
+        entry.low_confidence = score < LOW_CONFIDENCE_THRESHOLD or (
+            scanned.parsed_year is None
+            and score < (SERIES_NO_YEAR_THRESHOLD if client.kind == "series" else 1.01)
+        )
     except TmdbError as exc:
         entry.status = "error"
         entry.error = str(exc)
@@ -97,17 +103,29 @@ async def _resolve(
 async def run_sync(
     settings: Settings,
     *,
+    kind: MediaKind = "movies",
     force: bool = False,
     retry_unmatched: bool = False,
     only: Iterable[str] | None = None,
     progress: ProgressCallback | None = None,
 ) -> SyncReport:
     """Bring the cache in line with the library, fetching as little as possible."""
-    scanned, _notes = scan_libraries(settings.movies_dirs)
+    roots = settings.library_dirs(kind)
+    if not roots:
+        # A library that was never configured is not an error — the Series tab of a
+        # movies-only install must show an empty grid, not a failed sync.
+        if progress:
+            progress(0, 0, "")
+        return SyncReport()
+
+    cache_path = settings.cache_path_for(kind)
+    overrides_path = settings.overrides_path_for(kind)
+
+    scanned, _notes = scan_libraries(roots, kind)
     by_name = {item.dir_name: item for item in scanned}
-    offline = [path for path in settings.movies_dirs if not path.exists()]
-    cache = load_cache(settings.cache_path)
-    overrides = load_overrides(settings.overrides_path)
+    offline = [path for path in roots if not path.exists()]
+    cache = load_cache(cache_path)
+    overrides = load_overrides(overrides_path)
     only_set = set(only) if only is not None else None
     # Naming folders explicitly is a request to refetch them, whatever the cache says.
     force = force or only_set is not None
@@ -149,7 +167,7 @@ async def run_sync(
         progress(0, total, "")
 
     if total:
-        async with TmdbClient(settings) as client:
+        async with TmdbClient(settings, kind) as client:
             cache.image_base_url = await client.image_base_url()
             tasks = [
                 asyncio.create_task(
@@ -168,32 +186,39 @@ async def run_sync(
                     progress(done, total, entry.dir_name)
                 if done % CHECKPOINT_EVERY == 0:
                     cache.synced_at = _now()
-                    save_cache(settings.cache_path, cache)
+                    save_cache(cache_path, cache)
 
     report.unmatched = sum(1 for entry in cache.entries.values() if entry.status == "unmatched")
     cache.synced_at = _now()
-    save_cache(settings.cache_path, cache)
+    save_cache(cache_path, cache)
     return report
 
 
-async def resolve_single(settings: Settings, dir_name: str) -> CacheEntry | None:
+async def resolve_single(
+    settings: Settings, dir_name: str, kind: MediaKind = "movies"
+) -> CacheEntry | None:
     """Refetch one folder (used after an override is set from the UI)."""
-    entries, _notes = scan_libraries(settings.movies_dirs)
+    roots = settings.library_dirs(kind)
+    if not roots:
+        return None
+
+    entries, _notes = scan_libraries(roots, kind)
     item = {entry.dir_name: entry for entry in entries}.get(dir_name)
     if item is None:
         return None
 
-    overrides = load_overrides(settings.overrides_path)
-    cache = load_cache(settings.cache_path)
-    async with TmdbClient(settings) as client:
+    cache_path = settings.cache_path_for(kind)
+    overrides = load_overrides(settings.overrides_path_for(kind))
+    cache = load_cache(cache_path)
+    async with TmdbClient(settings, kind) as client:
         cache.image_base_url = await client.image_base_url()
         entry = await _resolve(client, item, overrides.get(dir_name), dir_name in overrides)
 
     cache.entries[dir_name] = entry
     cache.synced_at = _now()
-    save_cache(settings.cache_path, cache)
+    save_cache(cache_path, cache)
     return entry
 
 
-def read_cache(settings: Settings) -> CacheFile:
-    return load_cache(settings.cache_path)
+def read_cache(settings: Settings, kind: MediaKind = "movies") -> CacheFile:
+    return load_cache(settings.cache_path_for(kind))

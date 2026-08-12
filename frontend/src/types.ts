@@ -1,12 +1,36 @@
 export type EntryStatus = 'matched' | 'unmatched' | 'ignored' | 'error'
 
+/** The two libraries the app keeps side by side, one per tab. */
+export type MediaKind = 'movies' | 'series'
+
 export interface CastMember {
   name: string
   character: string
   profile_path: string | null
 }
 
-export interface TmdbMovie {
+export interface Episode {
+  episode_number: number
+  name: string
+  overview: string
+  air_date: string
+  runtime: number | null
+  still_path: string | null
+  vote_average: number
+}
+
+export interface Season {
+  season_number: number
+  name: string
+  overview: string
+  air_date: string
+  episode_count: number
+  poster_path: string | null
+  episodes: Episode[]
+}
+
+/** One film or one show — shows reuse the film field names (see models.py). */
+export interface TmdbTitle {
   id: number
   title: string
   original_title: string
@@ -25,6 +49,11 @@ export interface TmdbMovie {
   spoken_languages: string[]
   directors: string[]
   cast: CastMember[]
+  media_type: 'movie' | 'tv'
+  number_of_seasons: number | null
+  number_of_episodes: number | null
+  networks: string[]
+  seasons: Season[]
 }
 
 export interface CacheEntry {
@@ -39,7 +68,7 @@ export interface CacheEntry {
   low_confidence: boolean
   fetched_at: string
   error: string | null
-  tmdb: TmdbMovie | null
+  tmdb: TmdbTitle | null
 }
 
 export interface CacheFile {
@@ -59,6 +88,7 @@ export interface SyncReport {
 }
 
 export interface SyncStatus {
+  kind: MediaKind
   running: boolean
   total: number
   done: number
@@ -67,6 +97,16 @@ export interface SyncStatus {
   finished_at: string
   report: SyncReport | null
   error: string | null
+}
+
+export interface LibraryStats {
+  kind: MediaKind
+  total: number
+  by_status: Record<string, number>
+  low_confidence: number
+  synced_at: string
+  /** The folders configured for this library — empty means "never set up". */
+  dirs: string[]
 }
 
 export interface SearchResult {
@@ -79,11 +119,11 @@ export interface SearchResult {
   vote_average: number
 }
 
-/** One card in the grid: several folders can be the same film (different rips). */
-export interface MovieGroup {
+/** One card in the grid: several folders can be the same title (different rips). */
+export interface TitleGroup {
   key: string
   entries: CacheEntry[]
-  tmdb: TmdbMovie | null
+  tmdb: TmdbTitle | null
   title: string
   year: number | null
   rating: number

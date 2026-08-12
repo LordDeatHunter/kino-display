@@ -1,11 +1,12 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js'
 import { confirmMatches } from '../api'
-import type { CacheEntry, MovieGroup } from '../types'
+import type { CacheEntry, MediaKind, TitleGroup } from '../types'
 import { entryNeedsAttention, formatRuntime, imageUrl } from '../util'
 import FixMatch from './FixMatch'
 
 interface Props {
-  group: MovieGroup
+  group: TitleGroup
+  kind: MediaKind
   onClose: () => void
   onEntryUpdated: (entry: CacheEntry) => void
 }
@@ -14,7 +15,10 @@ export default function MovieModal(props: Props) {
   const [showFix, setShowFix] = createSignal(false)
   const [posterBroken, setPosterBroken] = createSignal(false)
   const [confirming, setConfirming] = createSignal(false)
+  const [openSeason, setOpenSeason] = createSignal<number | null>(null)
   const movie = () => props.group.tmdb
+  const isShow = () => movie()?.media_type === 'tv'
+  const noun = () => (props.kind === 'series' ? 'show' : 'film')
 
   const flagged = () => props.group.entries.filter(entryNeedsAttention)
   const worstConfidence = () =>
@@ -23,7 +27,10 @@ export default function MovieModal(props: Props) {
   const accept = async () => {
     setConfirming(true)
     try {
-      const updated = await confirmMatches(flagged().map((entry) => entry.dir_name))
+      const updated = await confirmMatches(
+        flagged().map((entry) => entry.dir_name),
+        props.kind,
+      )
       updated.forEach(props.onEntryUpdated)
     } finally {
       setConfirming(false)
@@ -77,14 +84,32 @@ export default function MovieModal(props: Props) {
                 <Show when={props.group.year}>
                   <span>{props.group.year}</span>
                 </Show>
+                <Show when={isShow() && movie()?.number_of_seasons}>
+                  <span>
+                    {movie()!.number_of_seasons} season{movie()!.number_of_seasons === 1 ? '' : 's'}
+                    <Show when={movie()?.number_of_episodes}>
+                      {' · '}
+                      {movie()!.number_of_episodes} episodes
+                    </Show>
+                  </span>
+                </Show>
                 <Show when={props.group.runtime}>
-                  <span>{formatRuntime(props.group.runtime)}</span>
+                  <span>
+                    {formatRuntime(props.group.runtime)}
+                    {isShow() ? ' / ep' : ''}
+                  </span>
                 </Show>
                 <Show when={props.group.rating > 0}>
                   <span>★ {props.group.rating.toFixed(1)} ({movie()?.vote_count ?? 0})</span>
                 </Show>
                 <Show when={movie()?.directors.length}>
-                  <span>Dir. {movie()!.directors.join(', ')}</span>
+                  <span>
+                    {isShow() ? 'Created by ' : 'Dir. '}
+                    {movie()!.directors.join(', ')}
+                  </span>
+                </Show>
+                <Show when={isShow() && movie()?.networks.length}>
+                  <span>{movie()!.networks.join(', ')}</span>
                 </Show>
               </p>
 
@@ -96,7 +121,11 @@ export default function MovieModal(props: Props) {
 
               <p class="modal-links">
                 <Show when={movie()}>
-                  <a href={`https://www.themoviedb.org/movie/${movie()!.id}`} target="_blank" rel="noreferrer">
+                  <a
+                    href={`https://www.themoviedb.org/${isShow() ? 'tv' : 'movie'}/${movie()!.id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     TMDB
                   </a>
                 </Show>
@@ -106,7 +135,7 @@ export default function MovieModal(props: Props) {
                   </a>
                 </Show>
                 <button type="button" class="linklike" onClick={() => setShowFix((value) => !value)}>
-                  {showFix() ? 'Hide match tools' : 'Wrong movie?'}
+                  {showFix() ? 'Hide match tools' : `Wrong ${noun()}?`}
                 </button>
               </p>
             </div>
@@ -115,7 +144,7 @@ export default function MovieModal(props: Props) {
           <Show when={props.group.needsAttention}>
             <div class="verify">
               <div class="verify-text">
-                <strong>Is this the right film?</strong>
+                <strong>Is this the right {noun()}?</strong>
                 <Show
                   when={movie()}
                   fallback={<span>No TMDB match was found for this folder — search for it below.</span>}
@@ -141,7 +170,7 @@ export default function MovieModal(props: Props) {
                   class="ghost"
                   onClick={() => setShowFix((value) => !value)}
                 >
-                  {showFix() ? 'Hide search' : 'Pick a different film'}
+                  {showFix() ? 'Hide search' : `Pick a different ${noun()}`}
                 </button>
               </div>
             </div>
@@ -173,6 +202,90 @@ export default function MovieModal(props: Props) {
             </section>
           </Show>
 
+          <Show when={movie()?.seasons.length}>
+            <section class="section">
+              <h3>Seasons</h3>
+              {/* One season open at a time — a long-running show is otherwise
+                  hundreds of episodes of scrolling. */}
+              <ul class="seasons">
+                <For each={movie()!.seasons}>
+                  {(season) => {
+                    const open = () => openSeason() === season.season_number
+                    return (
+                      <li classList={{ open: open() }}>
+                        <button
+                          type="button"
+                          class="season-head"
+                          aria-expanded={open()}
+                          onClick={() =>
+                            setOpenSeason(open() ? null : season.season_number)
+                          }
+                        >
+                          <Show
+                            when={imageUrl(season.poster_path, 'w185')}
+                            fallback={<div class="season-poster-empty">📺</div>}
+                          >
+                            {(src) => <img class="season-poster" src={src()} alt="" loading="lazy" />}
+                          </Show>
+                          <span class="season-info">
+                            <span class="season-name">{season.name}</span>
+                            <span class="season-meta">
+                              <Show when={season.air_date}>{season.air_date.slice(0, 4)} · </Show>
+                              {season.episode_count} episode{season.episode_count === 1 ? '' : 's'}
+                            </span>
+                            <Show when={season.overview}>
+                              <span class="season-overview">{season.overview}</span>
+                            </Show>
+                          </span>
+                          <span class="season-chevron">{open() ? '▾' : '▸'}</span>
+                        </button>
+
+                        <Show when={open()}>
+                          <ul class="episodes">
+                            <For each={season.episodes}>
+                              {(episode) => (
+                                <li>
+                                  <Show
+                                    when={imageUrl(episode.still_path, 'w300')}
+                                    fallback={<div class="still-empty" />}
+                                  >
+                                    {(src) => <img class="still" src={src()} alt="" loading="lazy" />}
+                                  </Show>
+                                  <div class="episode-info">
+                                    <span class="episode-title">
+                                      {episode.episode_number}. {episode.name}
+                                    </span>
+                                    <span class="episode-meta">
+                                      <Show when={episode.air_date}>{episode.air_date}</Show>
+                                      <Show when={episode.runtime}>
+                                        {' · '}
+                                        {formatRuntime(episode.runtime)}
+                                      </Show>
+                                      <Show when={episode.vote_average > 0}>
+                                        {' · ★ '}
+                                        {episode.vote_average.toFixed(1)}
+                                      </Show>
+                                    </span>
+                                    <Show when={episode.overview}>
+                                      <p class="episode-overview">{episode.overview}</p>
+                                    </Show>
+                                  </div>
+                                </li>
+                              )}
+                            </For>
+                            <Show when={!season.episodes.length}>
+                              <li class="muted">No episode details cached for this season.</li>
+                            </Show>
+                          </ul>
+                        </Show>
+                      </li>
+                    )
+                  }}
+                </For>
+              </ul>
+            </section>
+          </Show>
+
           <section class="section">
             <h3>
               {props.group.entries.length > 1 ? `${props.group.entries.length} copies on disk` : 'On disk'}
@@ -197,7 +310,7 @@ export default function MovieModal(props: Props) {
             <section class="section">
               <For each={props.group.entries}>
                 {(entry) => (
-                  <FixMatch entry={entry} onApplied={props.onEntryUpdated} />
+                  <FixMatch entry={entry} kind={props.kind} onApplied={props.onEntryUpdated} />
                 )}
               </For>
             </section>

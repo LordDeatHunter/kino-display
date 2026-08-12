@@ -10,8 +10,8 @@ from typing import Any
 
 import httpx
 
-from .config import Settings
-from .models import DEFAULT_IMAGE_BASE, CastMember, TmdbMovie
+from .config import MediaKind, Settings
+from .models import DEFAULT_IMAGE_BASE, CastMember, Episode, Season, TmdbTitle
 
 API_BASE = "https://api.themoviedb.org/3"
 MAX_ATTEMPTS = 4
@@ -38,6 +38,31 @@ def deleet(title: str) -> str:
 
 class TmdbError(RuntimeError):
     pass
+
+
+def _typical_runtime(seasons: list[Season]) -> int | None:
+    """The median episode length.
+
+    TMDB leaves `episode_run_time` empty on most shows now, so without this a
+    series would simply have no runtime to show or sort by. Specials are left out
+    — a feature-length finale should not drag the number around.
+    """
+    lengths = sorted(
+        episode.runtime
+        for season in seasons
+        if season.season_number != 0
+        for episode in season.episodes
+        if episode.runtime
+    )
+    return lengths[len(lengths) // 2] if lengths else None
+
+
+def _aggregate_character(member: dict[str, Any]) -> str:
+    """A show-wide cast entry lists its roles instead of one `character` field."""
+    roles = member.get("roles") or []
+    if roles:
+        return str(roles[0].get("character") or "")
+    return str(member.get("character") or "")
 
 
 def _normalize(text: str) -> str:
@@ -77,10 +102,28 @@ def pick_best(parsed_title: str, parsed_year: int | None, results: list[dict[str
     return best, best_score
 
 
+def normalize_result(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Give a TV search result the field names a film result uses.
+
+    Done at the edge so scoring, matching and the /api/tmdb/search payload never
+    have to know which endpoint the candidate came from.
+    """
+    if "title" in candidate and "name" not in candidate:
+        return candidate
+    merged = dict(candidate)
+    merged.setdefault("title", candidate.get("name") or "")
+    merged.setdefault("original_title", candidate.get("original_name") or "")
+    merged.setdefault("release_date", candidate.get("first_air_date") or "")
+    return merged
+
+
 class TmdbClient:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, kind: MediaKind = "movies") -> None:
         settings.require_credentials()
         self._settings = settings
+        self.kind = kind
+        # "movie" and "tv" are the TMDB path segments for both search and details.
+        self._segment = "tv" if kind == "series" else "movie"
         self._semaphore = asyncio.Semaphore(max(1, settings.max_concurrency))
         headers = {"accept": "application/json"}
         if settings.api_read_access_token:
@@ -143,21 +186,23 @@ class TmdbClient:
         return self._image_base
 
     async def search(self, title: str, year: int | None = None) -> list[dict[str, Any]]:
+        path = f"/search/{self._segment}"
         params: dict[str, Any] = {
             "query": title,
             "include_adult": "true",
             "language": self._settings.tmdb_language,
         }
         if year:
-            params["year"] = year
-        payload = await self._get("/search/movie", params)
+            # /search/tv has no "year"; the equivalent filter is the first air year.
+            params["first_air_date_year" if self._segment == "tv" else "year"] = year
+        payload = await self._get(path, params)
         results = payload.get("results") or []
         if not results and year:
-            # The folder's year is often the rip's year, not the film's.
-            params.pop("year")
-            payload = await self._get("/search/movie", params)
+            # The folder's year is often the rip's year, not the release's.
+            params.pop("first_air_date_year" if self._segment == "tv" else "year")
+            payload = await self._get(path, params)
             results = payload.get("results") or []
-        return results
+        return [normalize_result(item) for item in results]
 
     async def find_best(
         self, title: str, year: int | None
@@ -183,7 +228,12 @@ class TmdbClient:
 
         return best, score
 
-    async def details(self, movie_id: int) -> TmdbMovie:
+    async def details(self, tmdb_id: int) -> TmdbTitle:
+        if self._segment == "tv":
+            return await self._show_details(tmdb_id)
+        return await self._movie_details(tmdb_id)
+
+    async def _movie_details(self, movie_id: int) -> TmdbTitle:
         payload = await self._get(
             f"/movie/{movie_id}",
             {"language": self._settings.tmdb_language, "append_to_response": "credits"},
@@ -202,7 +252,7 @@ class TmdbClient:
             )
             for member in (credits.get("cast") or [])[:CAST_LIMIT]
         ]
-        return TmdbMovie(
+        return TmdbTitle(
             id=payload["id"],
             title=payload.get("title") or payload.get("original_title") or "",
             original_title=payload.get("original_title") or "",
@@ -221,4 +271,101 @@ class TmdbClient:
             spoken_languages=[lang.get("english_name", "") for lang in payload.get("spoken_languages") or []],
             directors=directors,
             cast=cast,
+            media_type="movie",
+        )
+
+    async def _show_details(self, tv_id: int) -> TmdbTitle:
+        """A show plus every one of its seasons, episode lists included.
+
+        That is one request per season on top of the show itself, which is why a
+        series sync is markedly slower than a film one. They run concurrently under
+        the shared semaphore, so the request rate is the same as everywhere else.
+        """
+        payload = await self._get(
+            f"/tv/{tv_id}",
+            {
+                "language": self._settings.tmdb_language,
+                # TV credits are per-episode; aggregate_credits is the show-wide roll-up.
+                # external_ids is where a show's imdb_id lives.
+                "append_to_response": "aggregate_credits,external_ids",
+            },
+        )
+        credits = payload.get("aggregate_credits") or payload.get("credits") or {}
+        cast = [
+            CastMember(
+                name=member.get("name") or "",
+                character=_aggregate_character(member),
+                profile_path=member.get("profile_path"),
+            )
+            for member in (credits.get("cast") or [])[:CAST_LIMIT]
+        ]
+        declared = [int(value) for value in payload.get("episode_run_time") or [] if value]
+
+        # Specials (season 0) are real but belong after the numbered run.
+        numbers = sorted(
+            {
+                int(season.get("season_number"))
+                for season in payload.get("seasons") or []
+                if season.get("season_number") is not None
+            },
+            key=lambda number: (number == 0, number),
+        )
+        fetched = await asyncio.gather(
+            *(self.season_details(tv_id, number) for number in numbers), return_exceptions=True
+        )
+        # A season that failed to fetch is dropped rather than failing the show: a full
+        # episode list is a bonus, the show itself is the point.
+        seasons = [season for season in fetched if isinstance(season, Season)]
+
+        return TmdbTitle(
+            id=payload["id"],
+            title=payload.get("name") or payload.get("original_name") or "",
+            original_title=payload.get("original_name") or "",
+            overview=payload.get("overview") or "",
+            tagline=payload.get("tagline") or "",
+            release_date=payload.get("first_air_date") or "",
+            runtime=declared[0] if declared else _typical_runtime(seasons),
+            genres=[genre["name"] for genre in payload.get("genres") or []],
+            vote_average=float(payload.get("vote_average") or 0.0),
+            vote_count=int(payload.get("vote_count") or 0),
+            popularity=float(payload.get("popularity") or 0.0),
+            poster_path=payload.get("poster_path"),
+            backdrop_path=payload.get("backdrop_path"),
+            imdb_id=(payload.get("external_ids") or {}).get("imdb_id"),
+            homepage=payload.get("homepage") or "",
+            spoken_languages=[lang.get("english_name", "") for lang in payload.get("spoken_languages") or []],
+            directors=[creator.get("name", "") for creator in payload.get("created_by") or []],
+            cast=cast,
+            media_type="tv",
+            number_of_seasons=payload.get("number_of_seasons"),
+            number_of_episodes=payload.get("number_of_episodes"),
+            networks=[network.get("name", "") for network in payload.get("networks") or []],
+            seasons=seasons,
+        )
+
+    async def season_details(self, tv_id: int, season_number: int) -> Season:
+        payload = await self._get(
+            f"/tv/{tv_id}/season/{season_number}",
+            {"language": self._settings.tmdb_language},
+        )
+        episodes = [
+            Episode(
+                episode_number=int(item.get("episode_number") or 0),
+                name=item.get("name") or "",
+                overview=item.get("overview") or "",
+                air_date=item.get("air_date") or "",
+                runtime=item.get("runtime"),
+                still_path=item.get("still_path"),
+                vote_average=float(item.get("vote_average") or 0.0),
+            )
+            for item in payload.get("episodes") or []
+        ]
+        return Season(
+            season_number=season_number,
+            name=payload.get("name") or f"Season {season_number}",
+            overview=payload.get("overview") or "",
+            air_date=payload.get("air_date") or "",
+            episode_count=len(episodes),
+            poster_path=payload.get("poster_path"),
+            episodes=episodes,
         )

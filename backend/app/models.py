@@ -6,6 +6,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from .config import MediaKind
+
+# Deliberately not bumped for the series work: every field added below is optional
+# with a default, so an existing cache.json still validates and nothing is refetched.
 SCHEMA_VERSION = 1
 DEFAULT_IMAGE_BASE = "https://image.tmdb.org/t/p/"
 
@@ -28,7 +32,35 @@ class CastMember(BaseModel):
     profile_path: str | None = None
 
 
-class TmdbMovie(BaseModel):
+class Episode(BaseModel):
+    episode_number: int
+    name: str = ""
+    overview: str = ""
+    air_date: str = ""
+    runtime: int | None = None
+    still_path: str | None = None
+    vote_average: float = 0.0
+
+
+class Season(BaseModel):
+    season_number: int
+    name: str = ""
+    overview: str = ""
+    air_date: str = ""
+    episode_count: int = 0
+    poster_path: str | None = None
+    episodes: list[Episode] = Field(default_factory=list)
+
+
+class TmdbTitle(BaseModel):
+    """One film or one show.
+
+    Shows are folded into the film shape rather than given their own model: `name`
+    becomes `title`, `first_air_date` becomes `release_date`, creators become
+    `directors`, so grouping, sorting and every UI component work on both unchanged.
+    The TV-only extras hang off the end.
+    """
+
     id: int
     title: str
     original_title: str = ""
@@ -48,6 +80,12 @@ class TmdbMovie(BaseModel):
     directors: list[str] = Field(default_factory=list)
     cast: list[CastMember] = Field(default_factory=list)
 
+    media_type: Literal["movie", "tv"] = "movie"
+    number_of_seasons: int | None = None
+    number_of_episodes: int | None = None
+    networks: list[str] = Field(default_factory=list)
+    seasons: list[Season] = Field(default_factory=list)
+
     @property
     def year(self) -> int | None:
         return int(self.release_date[:4]) if self.release_date[:4].isdigit() else None
@@ -65,7 +103,7 @@ class CacheEntry(BaseModel):
     low_confidence: bool = False
     fetched_at: str = ""
     error: str | None = None
-    tmdb: TmdbMovie | None = None
+    tmdb: TmdbTitle | None = None
 
 
 class CacheFile(BaseModel):
@@ -89,6 +127,7 @@ class SyncReport(BaseModel):
 
 
 class SyncStatus(BaseModel):
+    kind: MediaKind = "movies"
     running: bool = False
     total: int = 0
     done: int = 0
@@ -102,9 +141,11 @@ class SyncStatus(BaseModel):
 class OverrideRequest(BaseModel):
     dir_name: str
     tmdb_id: int | None = None
+    kind: MediaKind = "movies"
 
 
 class ConfirmRequest(BaseModel):
     """Accept the match a folder already has, clearing its "check me" flag."""
 
     dir_names: list[str]
+    kind: MediaKind = "movies"

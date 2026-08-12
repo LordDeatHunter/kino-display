@@ -16,7 +16,7 @@ from pathlib import Path
 import httpx
 
 from .cache import load_cache
-from .config import Settings
+from .config import MediaKind, Settings
 from .models import DEFAULT_IMAGE_BASE
 
 SIZES = frozenset({"w92", "w154", "w185", "w300", "w342", "w500", "w780", "w1280", "original"})
@@ -51,8 +51,8 @@ def local_path(settings: Settings, size: str, path: str) -> Path:
     return settings.images_dir / size / normalize_path(path).lstrip("/")
 
 
-def upstream_base(settings: Settings) -> str:
-    return load_cache(settings.cache_path).image_base_url or DEFAULT_IMAGE_BASE
+def upstream_base(settings: Settings, kind: MediaKind = "movies") -> str:
+    return load_cache(settings.cache_path_for(kind)).image_base_url or DEFAULT_IMAGE_BASE
 
 
 async def _download(client: httpx.AsyncClient, url: str, destination: Path) -> None:
@@ -119,19 +119,35 @@ async def fetch_image(
     return destination, False
 
 
-def wanted_images(settings: Settings, *, backdrops: bool, cast: bool) -> list[tuple[str, str]]:
+def wanted_images(
+    settings: Settings,
+    *,
+    backdrops: bool,
+    cast: bool,
+    stills: bool = False,
+    kind: MediaKind = "movies",
+) -> list[tuple[str, str]]:
     """Every (size, path) pair the UI could ask for, de-duplicated."""
-    cache = load_cache(settings.cache_path)
+    cache = load_cache(settings.cache_path_for(kind))
     seen: set[str] = set()
     wanted: list[tuple[str, str]] = []
     for entry in cache.entries.values():
         if entry.tmdb is None:
             continue
         candidates: list[tuple[str, str | None]] = [("w342", entry.tmdb.poster_path)]
+        # Season posters are on screen as soon as a show's modal opens, so they
+        # belong in the base set; episode stills are one click deeper.
+        candidates += [("w185", season.poster_path) for season in entry.tmdb.seasons]
         if backdrops:
             candidates.append(("w1280", entry.tmdb.backdrop_path))
         if cast:
             candidates += [("w185", member.profile_path) for member in entry.tmdb.cast]
+        if stills:
+            candidates += [
+                ("w300", episode.still_path)
+                for season in entry.tmdb.seasons
+                for episode in season.episodes
+            ]
         for size, path in candidates:
             if not path:
                 continue
@@ -147,11 +163,13 @@ async def prefetch(
     *,
     backdrops: bool = False,
     cast: bool = False,
+    stills: bool = False,
+    kind: MediaKind = "movies",
     progress: object = None,
 ) -> tuple[int, int, list[str]]:
-    """Warm the store from cache.json. Returns (downloaded, skipped, errors)."""
-    targets = wanted_images(settings, backdrops=backdrops, cast=cast)
-    base = upstream_base(settings)
+    """Warm the store from the kind's cache. Returns (downloaded, skipped, errors)."""
+    targets = wanted_images(settings, backdrops=backdrops, cast=cast, stills=stills, kind=kind)
+    base = upstream_base(settings, kind)
     semaphore = asyncio.Semaphore(max(1, settings.max_concurrency))
     downloaded = skipped = 0
     errors: list[str] = []

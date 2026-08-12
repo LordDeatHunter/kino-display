@@ -1,8 +1,9 @@
-import { For, Show } from 'solid-js'
-import type { SyncStatus } from '../types'
+import { For, Show, createMemo } from 'solid-js'
+import type { MediaKind, SyncStatus } from '../types'
 import type { SortDirection, SortMode } from '../util'
 
 interface Props {
+  kind: MediaKind
   query: string
   onQuery: (value: string) => void
   sort: SortMode
@@ -24,19 +25,32 @@ interface Props {
   onSync: (mode: 'incremental' | 'force' | 'unmatched') => void
 }
 
-const SORTS: { value: SortMode; label: string; asc: string; desc: string }[] = [
+interface SortOption {
+  value: SortMode
+  label: string
+  asc: string
+  desc: string
+  /** Absent means "both libraries". */
+  only?: MediaKind
+}
+
+const SORTS: SortOption[] = [
   { value: 'title', label: 'Title', asc: 'A → Z', desc: 'Z → A' },
   { value: 'year', label: 'Year', asc: 'Oldest first', desc: 'Newest first' },
   { value: 'rating', label: 'Rating', asc: 'Lowest first', desc: 'Highest first' },
   { value: 'votes', label: 'Vote count', asc: 'Fewest first', desc: 'Most first' },
   { value: 'popularity', label: 'Popularity', asc: 'Least first', desc: 'Most first' },
-  { value: 'runtime', label: 'Runtime', asc: 'Shortest first', desc: 'Longest first' },
+  // A show's "runtime" is one episode's, which is not a useful thing to rank by.
+  { value: 'runtime', label: 'Runtime', asc: 'Shortest first', desc: 'Longest first', only: 'movies' },
+  { value: 'seasons', label: 'Seasons', asc: 'Fewest first', desc: 'Most first', only: 'series' },
   { value: 'copies', label: 'Copies on disk', asc: 'Fewest first', desc: 'Most first' },
   { value: 'added', label: 'Date added', asc: 'Oldest first', desc: 'Newest first' },
 ]
 
 export default function Toolbar(props: Props) {
   const running = () => props.status?.running ?? false
+  const sorts = createMemo(() => SORTS.filter((sort) => !sort.only || sort.only === props.kind))
+  const noun = () => (props.kind === 'series' ? 'shows' : 'films')
   const directionLabel = () => {
     const sort = SORTS.find((entry) => entry.value === props.sort) ?? SORTS[0]
     return props.direction === 'asc' ? sort.asc : sort.desc
@@ -53,7 +67,9 @@ export default function Toolbar(props: Props) {
         <h1>
           Movielister
           <span class="count">
-            {props.shown === props.total ? `${props.total} films` : `${props.shown} of ${props.total}`}
+            {props.shown === props.total
+              ? `${props.total} ${noun()}`
+              : `${props.shown} of ${props.total}`}
           </span>
         </h1>
 
@@ -74,7 +90,11 @@ export default function Toolbar(props: Props) {
             class="ghost danger"
             disabled={running()}
             onClick={() => {
-              if (confirm('Refetch metadata for every folder? This re-queries TMDB for all entries.')) {
+              if (
+                confirm(
+                  `Refetch metadata for every ${props.kind} folder? This re-queries TMDB for all entries.`,
+                )
+              ) {
                 props.onSync('force')
               }
             }}
@@ -88,7 +108,11 @@ export default function Toolbar(props: Props) {
         <input
           class="search"
           type="search"
-          placeholder="Search title, director, cast, genre, folder…"
+          placeholder={
+            props.kind === 'series'
+              ? 'Search title, creator, cast, genre, folder…'
+              : 'Search title, director, cast, genre, folder…'
+          }
           value={props.query}
           onInput={(event) => props.onQuery(event.currentTarget.value)}
         />
@@ -119,7 +143,7 @@ export default function Toolbar(props: Props) {
               value={props.sort}
               onChange={(event) => props.onSort(event.currentTarget.value as SortMode)}
             >
-              <For each={SORTS}>{(sort) => <option value={sort.value}>{sort.label}</option>}</For>
+              <For each={sorts()}>{(sort) => <option value={sort.value}>{sort.label}</option>}</For>
             </select>
             <button
               type="button"

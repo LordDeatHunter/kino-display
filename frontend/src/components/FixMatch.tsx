@@ -1,10 +1,11 @@
 import { For, Show, createSignal } from 'solid-js'
 import { clearOverride, searchTmdb, setOverride } from '../api'
-import type { CacheEntry, SearchResult } from '../types'
+import type { CacheEntry, MediaKind, SearchResult } from '../types'
 import { imageUrl } from '../util'
 
 interface Props {
   entry: CacheEntry
+  kind: MediaKind
   onApplied: (entry: CacheEntry) => void
 }
 
@@ -21,7 +22,7 @@ export default function FixMatch(props: Props) {
     setBusy(true)
     setMessage('')
     try {
-      const payload = await searchTmdb(text)
+      const payload = await searchTmdb(text, props.kind)
       setResults(payload.results)
       if (!payload.results.length) setMessage('No results on TMDB for that title.')
     } catch (error) {
@@ -35,7 +36,7 @@ export default function FixMatch(props: Props) {
     setBusy(true)
     setMessage('')
     try {
-      const updated = await setOverride(props.entry.dir_name, tmdbId)
+      const updated = await setOverride(props.entry.dir_name, tmdbId, props.kind)
       props.onApplied(updated)
       setResults([])
       setMessage(tmdbId === null ? 'Folder is now ignored.' : `Pinned to TMDB #${tmdbId}.`)
@@ -49,7 +50,7 @@ export default function FixMatch(props: Props) {
   const reset = async () => {
     setBusy(true)
     try {
-      const updated = await clearOverride(props.entry.dir_name)
+      const updated = await clearOverride(props.entry.dir_name, props.kind)
       props.onApplied(updated)
       setMessage('Override removed — re-matched by search.')
     } catch (error) {
@@ -71,7 +72,7 @@ export default function FixMatch(props: Props) {
           type="search"
           value={query()}
           onInput={(event) => setQuery(event.currentTarget.value)}
-          placeholder="Search TMDB by title…"
+          placeholder={props.kind === 'series' ? 'Search TMDB for a show…' : 'Search TMDB by title…'}
         />
         <button type="submit" disabled={busy()}>
           Search

@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .cache import load_cache, load_overrides, save_cache, save_overrides
-from .config import get_settings
+from .config import MEDIA_KINDS, MediaKind, get_settings
 from .images import ImageError, ImageNotFound, fetch_image
 from .models import CacheEntry, CacheFile, ConfirmRequest, OverrideRequest, SyncStatus
 from .sync import read_cache, resolve_single, run_sync
@@ -27,79 +27,87 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_status = SyncStatus()
-_sync_lock = asyncio.Lock()
+# Each library syncs on its own, so a long series sync never blocks a movie one.
+_status: dict[MediaKind, SyncStatus] = {kind: SyncStatus(kind=kind) for kind in MEDIA_KINDS}
+_sync_locks: dict[MediaKind, asyncio.Lock] = {kind: asyncio.Lock() for kind in MEDIA_KINDS}
 
 
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
-@app.get("/api/movies", response_model=CacheFile)
-def get_movies() -> CacheFile:
-    return read_cache(get_settings())
+@app.get("/api/library", response_model=CacheFile)
+def get_library(kind: MediaKind = Query("movies")) -> CacheFile:
+    return read_cache(get_settings(), kind)
 
 
 @app.get("/api/stats")
-def get_stats() -> dict[str, object]:
-    cache = read_cache(get_settings())
+def get_stats(kind: MediaKind = Query("movies")) -> dict[str, object]:
+    settings = get_settings()
+    cache = read_cache(settings, kind)
     entries = list(cache.entries.values())
     counts: dict[str, int] = {}
     for entry in entries:
         counts[entry.status] = counts.get(entry.status, 0) + 1
     return {
+        "kind": kind,
         "total": len(entries),
         "by_status": counts,
         "low_confidence": sum(1 for e in entries if e.low_confidence and e.status == "matched"),
         "synced_at": cache.synced_at,
-        "movies_dirs": [str(path) for path in get_settings().movies_dirs],
+        "dirs": [str(path) for path in settings.library_dirs(kind)],
     }
 
 
-async def _run_sync_job(force: bool, retry_unmatched: bool) -> None:
+async def _run_sync_job(kind: MediaKind, force: bool, retry_unmatched: bool) -> None:
+    status = _status[kind]
+
     def progress(done: int, total: int, current: str) -> None:
-        _status.done = done
-        _status.total = total
-        _status.current = current
+        status.done = done
+        status.total = total
+        status.current = current
 
     try:
-        _status.report = await run_sync(
-            get_settings(), force=force, retry_unmatched=retry_unmatched, progress=progress
+        status.report = await run_sync(
+            get_settings(), kind=kind, force=force, retry_unmatched=retry_unmatched, progress=progress
         )
-        _status.error = None
+        status.error = None
     except Exception as exc:  # surfaced to the UI rather than lost in the server log
-        _status.error = f"{type(exc).__name__}: {exc}"
+        status.error = f"{type(exc).__name__}: {exc}"
     finally:
-        _status.running = False
-        _status.finished_at = _now()
-        _sync_lock.release()
+        status.running = False
+        status.finished_at = _now()
+        _sync_locks[kind].release()
 
 
 @app.post("/api/sync", response_model=SyncStatus)
 async def start_sync(
+    kind: MediaKind = Query("movies"),
     force: bool = Query(False),
     retry_unmatched: bool = Query(False),
 ) -> SyncStatus:
-    if _sync_lock.locked():
-        raise HTTPException(status_code=409, detail="A sync is already running")
-    await _sync_lock.acquire()
+    lock = _sync_locks[kind]
+    if lock.locked():
+        raise HTTPException(status_code=409, detail=f"A {kind} sync is already running")
+    await lock.acquire()
 
-    _status.running = True
-    _status.done = 0
-    _status.total = 0
-    _status.current = ""
-    _status.started_at = _now()
-    _status.finished_at = ""
-    _status.report = None
-    _status.error = None
+    status = _status[kind]
+    status.running = True
+    status.done = 0
+    status.total = 0
+    status.current = ""
+    status.started_at = _now()
+    status.finished_at = ""
+    status.report = None
+    status.error = None
 
-    asyncio.create_task(_run_sync_job(force, retry_unmatched))
-    return _status
+    asyncio.create_task(_run_sync_job(kind, force, retry_unmatched))
+    return status
 
 
 @app.get("/api/sync/status", response_model=SyncStatus)
-def sync_status() -> SyncStatus:
-    return _status
+def sync_status(kind: MediaKind = Query("movies")) -> SyncStatus:
+    return _status[kind]
 
 
 @app.get("/api/img/{size}/{filename}")
@@ -126,10 +134,14 @@ async def get_image(size: str, filename: str) -> FileResponse:
 
 
 @app.get("/api/tmdb/search")
-async def tmdb_search(q: str = Query(min_length=1), year: int | None = None) -> dict[str, object]:
+async def tmdb_search(
+    q: str = Query(min_length=1),
+    year: int | None = None,
+    kind: MediaKind = Query("movies"),
+) -> dict[str, object]:
     settings = get_settings()
     try:
-        async with TmdbClient(settings) as client:
+        async with TmdbClient(settings, kind) as client:
             results = await client.search(q, year)
             image_base = await client.image_base_url()
     except (TmdbError, RuntimeError) as exc:
@@ -154,32 +166,34 @@ async def tmdb_search(q: str = Query(min_length=1), year: int | None = None) -> 
 @app.post("/api/overrides", response_model=CacheEntry)
 async def set_override(request: OverrideRequest) -> CacheEntry:
     settings = get_settings()
-    overrides = load_overrides(settings.overrides_path)
+    path = settings.overrides_path_for(request.kind)
+    overrides = load_overrides(path)
     overrides[request.dir_name] = request.tmdb_id
-    save_overrides(settings.overrides_path, overrides)
+    save_overrides(path, overrides)
 
-    entry = await resolve_single(settings, request.dir_name)
+    entry = await resolve_single(settings, request.dir_name, request.kind)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"No such folder: {request.dir_name}")
     return entry
 
 
 @app.delete("/api/overrides/{dir_name:path}", response_model=CacheEntry)
-async def clear_override(dir_name: str) -> CacheEntry:
+async def clear_override(dir_name: str, kind: MediaKind = Query("movies")) -> CacheEntry:
     settings = get_settings()
-    overrides = load_overrides(settings.overrides_path)
+    path = settings.overrides_path_for(kind)
+    overrides = load_overrides(path)
     overrides.pop(dir_name, None)
-    save_overrides(settings.overrides_path, overrides)
+    save_overrides(path, overrides)
 
-    entry = await resolve_single(settings, dir_name)
+    entry = await resolve_single(settings, dir_name, kind)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"No such folder: {dir_name}")
     return entry
 
 
 @app.get("/api/overrides")
-def get_overrides() -> dict[str, int | None]:
-    return load_overrides(get_settings().overrides_path)
+def get_overrides(kind: MediaKind = Query("movies")) -> dict[str, int | None]:
+    return load_overrides(get_settings().overrides_path_for(kind))
 
 
 @app.post("/api/confirm", response_model=list[CacheEntry])
@@ -191,8 +205,10 @@ def confirm_matches(request: ConfirmRequest) -> list[CacheEntry]:
     metadata is already cached.
     """
     settings = get_settings()
-    cache = load_cache(settings.cache_path)
-    overrides = load_overrides(settings.overrides_path)
+    cache_path = settings.cache_path_for(request.kind)
+    overrides_path = settings.overrides_path_for(request.kind)
+    cache = load_cache(cache_path)
+    overrides = load_overrides(overrides_path)
 
     confirmed: list[CacheEntry] = []
     missing: list[str] = []
@@ -210,8 +226,8 @@ def confirm_matches(request: ConfirmRequest) -> list[CacheEntry]:
     if not confirmed:
         raise HTTPException(status_code=404, detail=f"Nothing to confirm: {missing}")
 
-    save_overrides(settings.overrides_path, overrides)
-    save_cache(settings.cache_path, cache)
+    save_overrides(overrides_path, overrides)
+    save_cache(cache_path, cache)
     return confirmed
 
 

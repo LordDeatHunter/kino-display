@@ -1,16 +1,17 @@
 import { Show, createMemo, createSignal } from 'solid-js'
-import type { MovieGroup } from '../types'
+import type { TitleGroup } from '../types'
 import { imageUrl } from '../util'
 
 interface Props {
-  group: MovieGroup
-  onOpen: (group: MovieGroup) => void
+  group: TitleGroup
+  onOpen: (group: TitleGroup) => void
 }
 
 export default function MovieCard(props: Props) {
   const [broken, setBroken] = createSignal(false)
   // A failed poster should leave a readable card, not a broken-image icon.
   const poster = createMemo(() => (broken() ? null : imageUrl(props.group.tmdb?.poster_path, 'w342')))
+  const seasons = () => props.group.tmdb?.number_of_seasons ?? 0
 
   return (
     <button class="card" onClick={() => props.onOpen(props.group)} type="button">
@@ -52,6 +53,10 @@ export default function MovieCard(props: Props) {
         <span class="card-title">{props.group.title}</span>
         <span class="card-sub">
           {props.group.year ?? '—'}
+          <Show when={seasons()}>
+            <span class="dot">·</span>
+            {seasons()} season{seasons() === 1 ? '' : 's'}
+          </Show>
           <Show when={props.group.genres.length}>
             <span class="dot">·</span>
             {props.group.genres[0]}

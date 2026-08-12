@@ -1,4 +1,4 @@
-"""First-run setup for `python main.py`: pick the library folders, build the UI, serve."""
+"""Startup for `python main.py`: the launcher menu, the frontend build, then serve."""
 
 from __future__ import annotations
 
@@ -13,10 +13,15 @@ from .cache import write_atomic
 from .config import (
     CONFIG_PATH,
     DEFAULT_MOVIES_DIR,
+    MEDIA_KINDS,
     PROJECT_ROOT,
-    env_movies_dirs,
+    MediaKind,
+    env_library_dirs,
     get_settings,
 )
+
+# config.json key per library.
+CONFIG_KEYS: dict[MediaKind, str] = {"movies": "movies_dirs", "series": "series_dirs"}
 
 
 def load_config() -> dict:
@@ -56,72 +61,35 @@ def _as_paths(raw: object) -> list[Path]:
     return paths
 
 
-def config_movies_dirs(config: dict) -> list[Path]:
+def config_dirs(config: dict, kind: MediaKind) -> list[Path]:
     """Folders saved in config.json, falling back to the legacy singular key."""
-    raw = config.get("movies_dirs", config.get("movies_dir"))
+    key = CONFIG_KEYS[kind]
+    raw = config.get(key, config.get(key.removesuffix("s")))
     return _as_paths(raw)
 
 
-def save_movies_dirs(config: dict, values: list[str]) -> None:
-    config.pop("movies_dir", None)  # superseded by the list
-    config["movies_dirs"] = values
+def save_dirs(config: dict, kind: MediaKind, values: list[str]) -> None:
+    key = CONFIG_KEYS[kind]
+    config.pop(key.removesuffix("s"), None)  # superseded by the list
+    config[key] = values
     save_config(config)
 
 
-def _read_choice() -> str:
-    """Block until the user presses Enter or Esc; anything else is ignored."""
-    if not sys.stdin.isatty():
-        try:
-            return "enter" if input().strip() == "" else "esc"
-        except EOFError:
-            return "esc"
-    while True:
-        key = _read_key()
-        if key in ("\r", "\n"):
-            return "enter"
-        if key == "\x1b":
-            return "esc"
-        if key == "\x03":
-            raise KeyboardInterrupt
-
-
-def _read_key() -> str:
-    if os.name == "nt":
-        import msvcrt
-
-        char = msvcrt.getch()
-        if char in (b"\x00", b"\xe0"):  # arrow / function key: drop the second byte
-            msvcrt.getch()
-            return ""
-        return char.decode("latin-1")
-
-    import termios
-    import tty
-
-    fd = sys.stdin.fileno()
-    saved = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        return sys.stdin.read(1)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-
-
-def _typed_directory() -> Path | None:
-    raw = input("  movies folder to add (blank to cancel): ").strip().strip('"')
+def _typed_directory(kind: MediaKind) -> Path | None:
+    raw = input(f"  {kind} folder to add (blank to cancel): ").strip().strip('"')
     return Path(raw) if raw else None
 
 
-def pick_directory(initial: Path | None) -> Path | None:
+def pick_directory(initial: Path | None, kind: MediaKind = "movies") -> Path | None:
     """Open the OS folder picker. Returns None if it is cancelled or unavailable."""
     try:
         import tkinter as tk
         from tkinter import filedialog
     except ImportError:
         print("  tkinter is not installed, so the picker cannot open — type a path instead.")
-        return _typed_directory()
+        return _typed_directory(kind)
 
-    options: dict[str, object] = {"title": "Select your movies folder", "mustexist": True}
+    options: dict[str, object] = {"title": f"Select a {kind} folder", "mustexist": True}
     if initial is not None and initial.is_dir():
         options["initialdir"] = str(initial)
     try:
@@ -134,85 +102,40 @@ def pick_directory(initial: Path | None) -> Path | None:
             root.destroy()
     except tk.TclError as exc:
         print(f"  the picker could not open ({exc}) — type a path instead.")
-        return _typed_directory()
+        return _typed_directory(kind)
     return Path(chosen) if chosen else None
 
 
-def _describe(paths: list[Path]) -> None:
-    for index, path in enumerate(paths, 1):
-        note = "" if path.is_dir() else "   (missing)"
-        print(f"  {index}. {path}{note}")
+def resolve_path(raw: str) -> Path | None:
+    """Turn a picked or typed path into the absolute form config.json stores."""
+    return _as_path(raw)
 
 
-def current_movies_dirs(config: dict) -> tuple[list[Path], str]:
+def current_dirs(config: dict, kind: MediaKind) -> tuple[list[Path], str]:
     """The folders in force right now, plus a label for where they came from."""
-    saved = config_movies_dirs(config)
+    saved = config_dirs(config, kind)
     if saved:
         return saved, CONFIG_PATH.name
-    from_env = _as_paths(env_movies_dirs() or [])
+    from_env = _as_paths(env_library_dirs(kind) or [])
     if from_env:
-        return from_env, "MOVIES_DIRS"
+        return from_env, f"{kind.upper()}_DIRS"
+    if kind == "series":
+        return [], "nothing yet"
     # The built-in default is only worth offering if it happens to be there; seeding a
     # brand-new config.json with a folder that does not exist helps nobody.
     fallback = [path for path in _as_paths([DEFAULT_MOVIES_DIR]) if path.is_dir()]
     return fallback, "the default"
 
 
-def prompt_for_movies_dirs(current: list[Path], source: str) -> list[Path]:
-    """Show the folders in use and add more, one per round, until the user is done.
-
-    Returns the folders to use — the ones passed in, unchanged, if the user just
-    presses Esc.
-    """
-    chosen = list(current)
-    while True:
-        print()
-        if chosen:
-            # The source only describes the folders as they were found, not additions.
-            print(f"movies folders (from {source}):" if chosen == current else "movies folders:")
-            _describe(chosen)
-            print("  [Enter]  open the picker and add another folder")
-            print("  [Esc]    continue with these")
-        else:
-            print("No movies folders are set.")
-            print("  [Enter]  open the picker and choose your movies folder")
-            print("  [Esc]    continue anyway — there will be nothing to scan")
-        if not sys.stdin.isatty():
-            print("  (not a terminal — press Enter for the picker, or anything else to continue)")
-
-        if _read_choice() == "esc":
-            return chosen
-
-        print("\nopening the folder picker...")
-        picked = pick_directory(chosen[-1] if chosen else None)
-        resolved = None if picked is None else _as_path(picked.as_posix())
-        if resolved is None:
-            print("nothing selected.")
-        elif resolved in chosen:
-            print("already added.")
-        else:
-            chosen.append(resolved)
-
-
-def resolve_movies_dirs() -> list[Path]:
-    """Show the library folders on every run, letting the user append to them.
-
-    Anything added is written to config.json — created on the spot if this is the
-    first run, appended to otherwise. Esc leaves the config exactly as it was.
-    """
+def upgrade_legacy_keys() -> dict:
+    """Rewrite any pre-list "movies_dir" key so what is saved matches what is shown."""
     config = load_config()
-    if "movies_dirs" not in config and config_movies_dirs(config):
-        # Upgrade the pre-list key in place so the saved value matches what is shown.
-        save_movies_dirs(config, [path.as_posix() for path in config_movies_dirs(config)])
-        print(f"note: 'movies_dir' in {CONFIG_PATH.name} is now the list 'movies_dirs'")
-
-    current, source = current_movies_dirs(config)
-    chosen = prompt_for_movies_dirs(current, source)
-
-    if chosen != current:
-        save_movies_dirs(config, [path.as_posix() for path in chosen])
-        print(f"\nsaved to {CONFIG_PATH.name}")
-    return chosen
+    for kind in MEDIA_KINDS:
+        key = CONFIG_KEYS[kind]
+        if key not in config and config_dirs(config, kind):
+            save_dirs(config, kind, [path.as_posix() for path in config_dirs(config, kind)])
+            print(f"note: '{key.removesuffix('s')}' in {CONFIG_PATH.name} is now the list '{key}'")
+    return config
 
 
 def _run(command: list[str], cwd: Path) -> bool:
@@ -245,26 +168,45 @@ def ensure_frontend_build() -> None:
         print("  npm run build failed — the API will run, but the web UI will not load.")
 
 
+def _describe_libraries(config: dict) -> None:
+    """Print the folders each library will actually scan, and where they came from."""
+    settings = get_settings()
+    for kind in MEDIA_KINDS:
+        in_use = settings.library_dirs(kind)
+        saved = config_dirs(config, kind)
+        if saved and in_use != saved:
+            print(f"note: {kind.upper()}_DIRS in the environment overrides {CONFIG_PATH.name}")
+        if not in_use:
+            print(f"{kind + ':':<9}none set — add one with `python main.py`")
+            continue
+        for index, path in enumerate(in_use):
+            note = "" if path.is_dir() else "   (missing — nothing will be scanned from it)"
+            print(f"{kind + ':' if index == 0 else '':<9}{path}{note}")
+        print(f"{'':<9}cache: {settings.cache_path_for(kind)}")
+
+
 def main() -> int:
     try:
-        chosen = resolve_movies_dirs()
+        config = upgrade_legacy_keys()
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            from .tui import run_launcher
+
+            if not run_launcher():
+                print("closed without starting.")
+                return 0
+        # Without a terminal there is no menu to show — a piped or scheduled run
+        # goes straight to serving whatever config.json already says.
     except KeyboardInterrupt:
         print("\ncancelled.")
         return 1
 
+    # The launcher may have rewritten config.json since settings were last read.
     get_settings.cache_clear()
-    settings = get_settings()
-    if settings.movies_dirs != chosen:
-        print(f"note: MOVIES_DIRS in the environment overrides {CONFIG_PATH.name}")
-    for index, path in enumerate(settings.movies_dirs):
-        note = "" if path.is_dir() else "   (missing — nothing will be scanned from it)"
-        print(f"{'movies:' if index == 0 else '':<9}{path}{note}")
-    if not settings.movies_dirs:
-        print("movies:  none set — add one with `python main.py` or in config.json")
-    print(f"cache:   {settings.cache_path}")
+    _describe_libraries(load_config() or config)
 
     ensure_frontend_build()
 
+    settings = get_settings()
     print(f"\nserving http://{settings.host}:{settings.port}  (Ctrl-C to stop)\n")
     from .cli import main as cli_main
 

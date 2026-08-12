@@ -1,4 +1,4 @@
-import type { CacheEntry, MovieGroup } from './types'
+import type { CacheEntry, TitleGroup } from './types'
 
 /** Artwork is served by our own backend, which caches it on disk — the browser
  *  never contacts image.tmdb.org, so a DNS blip can't blank the grid. */
@@ -22,14 +22,14 @@ export const entryNeedsAttention = (entry: CacheEntry) =>
   entry.status !== 'matched' || entry.low_confidence
 
 /** Flagged folders that do have a match — the ones "accept" applies to. */
-export const confirmableEntries = (groups: MovieGroup[]): string[] =>
+export const confirmableEntries = (groups: TitleGroup[]): string[] =>
   groups
     .filter((group) => group.needsAttention && group.tmdb)
     .flatMap((group) => group.entries.filter(entryNeedsAttention).map((entry) => entry.dir_name))
 
 /** Collapse folders that resolved to the same film into a single card. */
-export function groupEntries(entries: CacheEntry[]): MovieGroup[] {
-  const groups = new Map<string, MovieGroup>()
+export function groupEntries(entries: CacheEntry[]): TitleGroup[] {
+  const groups = new Map<string, TitleGroup>()
 
   for (const entry of entries) {
     if (entry.status === 'ignored') continue
@@ -60,7 +60,7 @@ export function groupEntries(entries: CacheEntry[]): MovieGroup[] {
 
 const sortKey = (title: string) => title.replace(/^(the|a|an)\s+/i, '').toLowerCase()
 
-export function searchMatches(group: MovieGroup, query: string): boolean {
+export function searchMatches(group: TitleGroup, query: string): boolean {
   const needle = query.trim().toLowerCase()
   if (!needle) return true
   const haystack = [
@@ -83,6 +83,7 @@ export type SortMode =
   | 'rating'
   | 'votes'
   | 'runtime'
+  | 'seasons'
   | 'popularity'
   | 'copies'
   | 'added'
@@ -96,30 +97,32 @@ export const DEFAULT_DIRECTION: Record<SortMode, SortDirection> = {
   rating: 'desc',
   votes: 'desc',
   runtime: 'desc',
+  seasons: 'desc',
   popularity: 'desc',
   copies: 'desc',
   added: 'desc',
 }
 
 /** `null` means "no value" — those groups sink to the bottom in both directions. */
-const SORT_VALUE: Record<SortMode, (group: MovieGroup) => number | string | null> = {
+const SORT_VALUE: Record<SortMode, (group: TitleGroup) => number | string | null> = {
   title: (group) => sortKey(group.title),
   year: (group) => group.year,
   rating: (group) => group.rating || null,
   votes: (group) => group.tmdb?.vote_count || null,
   runtime: (group) => group.runtime,
+  seasons: (group) => group.tmdb?.number_of_seasons ?? null,
   popularity: (group) => group.tmdb?.popularity || null,
   copies: (group) => group.entries.length,
   added: (group) => group.latestFetch || null,
 }
 
-const byTitle = (a: MovieGroup, b: MovieGroup) => sortKey(a.title).localeCompare(sortKey(b.title))
+const byTitle = (a: TitleGroup, b: TitleGroup) => sortKey(a.title).localeCompare(sortKey(b.title))
 
 export function sortGroups(
-  groups: MovieGroup[],
+  groups: TitleGroup[],
   mode: SortMode,
   direction: SortDirection = DEFAULT_DIRECTION[mode],
-): MovieGroup[] {
+): TitleGroup[] {
   const value = SORT_VALUE[mode] ?? SORT_VALUE.title
   const flip = direction === 'desc' ? -1 : 1
 

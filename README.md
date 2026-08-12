@@ -1,10 +1,14 @@
 # Movielister
 
 A local web app that puts TMDB metadata — posters, plots, ratings, runtimes, cast — in front of a
-folder-per-film movie library. Metadata is fetched once and cached on disk, so later runs only
-touch TMDB for folders that are actually new.
+folder-per-title library. Metadata is fetched once and cached on disk, so later runs only touch
+TMDB for folders that are actually new.
 
-FastAPI backend, SolidJS frontend, one JSON file for storage.
+Two libraries live side by side, one per tab in the UI: **Movies** and **Series**. They are kept
+completely apart — their own folders, their own cache, their own overrides — so syncing one can
+never disturb the other. Shows carry their full season and episode list, browsable in the modal.
+
+FastAPI backend, SolidJS frontend, one JSON file per library for storage.
 
 ## Setup
 
@@ -14,36 +18,57 @@ copy .env.example .env      # then fill in your TMDB token
 python main.py              # http://127.0.0.1:8000
 ```
 
-`main.py` is the whole startup path: it works out where your library is, builds the web UI if
-`frontend/dist` isn't there yet, and starts the server.
+`main.py` is the whole startup path: it shows the launcher, builds the web UI if `frontend/dist`
+isn't there yet, and starts the server.
 
-Every run starts by listing your movies folders, so you can see and extend them without editing
-anything:
+## The launcher
+
+`python main.py` opens a menu:
 
 ```
-movies folders (from config.json):
-  1. D:\Movies
-  2. E:\Movies 2   (missing)
-  [Enter]  open the picker and add another folder
-  [Esc]    continue with these
+  movielister
+
+  Movies      2 sources
+  Series      no sources yet
+  Start       launch the web app
 ```
 
-**Esc** carries on with exactly what's listed and writes nothing. **Enter** opens a folder picker
-and appends what you choose, then asks again — so you can add several in a row. Additions are
-saved to `config.json`, which is created on the spot if this is the first run.
+- **↑/↓** move, **Enter** opens. **Movies** and **Series** each open a list of that library's
+  folders.
+- **Esc** on the main menu quits without starting anything.
 
-The list itself comes from `config.json`, or from `MOVIES_DIRS` in `.env` if there's no config
-yet, or is empty on a machine where neither is set.
+Inside a library's screen:
+
+```
+  Series sources
+  saved in config.json
+
+  D:\Series
+  E:\Series 2   (missing)
+
+  [A] Add source   [D] Remove selected   [Esc] Back
+```
+
+**A** opens the OS folder picker (the TUI steps aside while it's up) and appends what you choose.
+**D** removes the highlighted folder. **Esc** goes back. Every change is written to `config.json`
+immediately — there's no save step.
+
+The starting list comes from `config.json`, or from `MOVIES_DIRS` / `SERIES_DIRS` in `.env` if the
+config has nothing for that library, or is empty when neither is set.
 
 ```json
 {
-  "movies_dirs": ["D:/Movies", "E:/Movies 2"]
+  "movies_dirs": ["D:/Movies", "E:/Movies 2"],
+  "series_dirs": ["D:/Series"]
 }
 ```
 
-The folders are scanned in order and merged into one library. The older singular `"movies_dir"`
-key still works and is upgraded to the list on the next run. To remove or reorder folders, edit
-`config.json` (or delete it to start over).
+Each library's folders are scanned in order and merged. The older singular `"movies_dir"` key
+still works and is upgraded to the list on the next run. You can also edit `config.json` by hand
+(or delete it to start over).
+
+Without a terminal — a piped or scheduled run — the menu is skipped and the server starts with
+whatever `config.json` already says.
 
 Then fetch metadata — once, and after that only for folders that are new:
 
@@ -57,8 +82,9 @@ python manage.py sync
 | --- | --- |
 | `API_READ_ACCESS_TOKEN` | TMDB v4 bearer token — what the app uses |
 | `API_KEY` | TMDB v3 key, used only if no bearer token is set |
-| `MOVIES_DIRS` | your library folders, separated by `;` on Windows (`:` elsewhere) — normally set via `config.json`, which wins over `.env`. Set here it becomes the default the first-run prompt offers |
-| `DATA_DIR` | where `cache.json` and `overrides.json` live (default `data`) |
+| `MOVIES_DIRS` | your film folders, separated by `;` on Windows (`:` elsewhere) — normally set via `config.json`, which wins over `.env`. Set here it becomes the fallback the launcher offers |
+| `SERIES_DIRS` | the same, for your TV libraries |
+| `DATA_DIR` | where the caches and overrides live (default `data`) |
 | `HOST` / `PORT` | server bind address |
 | `TMDB_LANGUAGE` / `MAX_CONCURRENCY` | metadata language, parallel request cap |
 
@@ -82,24 +108,50 @@ python manage.py serve     # serve only, no setup or frontend build
 | `python manage.py sync --force` | refetch every entry from scratch |
 | `python manage.py sync --retry-unmatched` | retry only the entries that never matched |
 | `python manage.py sync --only "Folder Name" ...` | force a refetch of specific folders |
-| `python manage.py prefetch` | download all posters up front (`--backdrops`, `--cast`, `--all`) |
+| `python manage.py prefetch` | download all posters up front (`--backdrops`, `--cast`, `--stills`, `--all`) |
 | `python manage.py status` | cache summary plus every unmatched / low-confidence entry |
 | `python manage.py serve --reload` | dev server with auto-reload |
 
-The **Sync**, **Retry unmatched** and **Force refetch** buttons in the UI do the same three things,
-with a live progress bar.
+`scan`, `sync`, `prefetch` and `status` all take `--kind movies|series|all` and default to `all`,
+so a bare `python manage.py sync` brings both libraries up to date.
+
+The **Sync**, **Retry unmatched** and **Force refetch** buttons in the UI do the same three things
+for whichever tab you're on, with a live progress bar. The two tabs sync independently — you can
+start a series sync while a film sync is still running.
 
 ### Browsing
 
-Search covers title, original title, tagline, director, cast, genre and folder name. Sort by
-title, year, rating, vote count, popularity, runtime, copies on disk or date added — each with an
-ascending/descending toggle next to the picker. Choosing a field resets to its natural direction
+The **Movies** and **Series** tabs at the top of the page each keep their own search, sort and
+filters, so switching between them doesn't lose your place. The tab lives in the URL hash
+(`#/series`), so a refresh or a bookmark comes back to the same one.
+
+Search covers title, original title, tagline, director or creator, cast, genre and folder name.
+Sort by title, year, rating, vote count, popularity, copies on disk or date added — plus runtime
+on Movies and season count on Series — each with an ascending/descending toggle next to the
+picker. Choosing a field resets to its natural direction
 (titles A→Z, everything else best or newest first); the toggle then flips it. Films with no value
 for the chosen field always sort to the end, in either direction.
 
+### Series
+
+A series folder is one show — `D:\Series\Breaking Bad (2008)`, `D:\Series\The.Office.US.S01-S09`.
+Only that top level is scanned; seasons and episodes come from TMDB, not from what's on disk, so
+however you arrange the files inside doesn't matter.
+
+Folder names go through the same parser as films, with season and pack markers stripped first
+(`S01`, `S01-S09`, `S01E02`, `Season 3`, `Complete Series`). Matching then uses TMDB's TV search,
+and a matched show pulls in every season with its full episode list — name, air date, runtime,
+rating, overview and still. Open a show and the **Seasons** section expands one season at a time.
+
+That means a series sync is slower than a film one: a show costs one request plus one per season,
+against one flat request per film.
+
 ## How caching works
 
-`data/cache.json` is keyed by folder name:
+Each library has its own pair of files — `data/cache.json` + `data/overrides.json` for films,
+`data/cache-series.json` + `data/overrides-series.json` for shows. They never mix.
+
+A cache is keyed by folder name:
 
 - folder in cache and still on disk → left alone, no API call
 - folder on disk but not in cache → fetched
@@ -130,8 +182,11 @@ at most once, ever.
 
 ```powershell
 python manage.py prefetch          # ~284 posters, ~11 MB — the UI then works offline
-python manage.py prefetch --all    # plus backdrops and cast portraits
+python manage.py prefetch --all    # plus backdrops, cast portraits and episode stills
 ```
+
+Season posters come down with the posters; episode stills are behind `--stills` (or `--all`),
+since a long-running show has hundreds of them.
 
 `prefetch` skips anything already on disk, so re-running it is cheap. Images that can't be
 fetched fall back to a placeholder card rather than a broken-image icon.
@@ -164,8 +219,9 @@ everything currently listed in one go. It only ever acts on what's on screen, so
 first (by genre or search) if you want to work through it in batches. Anything accepted by mistake
 can be re-fixed individually afterwards.
 
-Both paths write to `data/overrides.json` (see `overrides.example.json`), which you can also edit
-by hand:
+Both paths write to that library's overrides file — `data/overrides.json` for films,
+`data/overrides-series.json` for shows (see `overrides.example.json`) — which you can also edit by
+hand:
 
 ```json
 {
@@ -174,8 +230,9 @@ by hand:
 }
 ```
 
-Keys are exact folder names, values are TMDB movie ids. `null` hides the folder from the UI.
-Overrides win over search, survive `--force`, and take effect on the next sync.
+Keys are exact folder names, values are TMDB ids — movie ids in the films file, TV ids in the
+series one. `null` hides the folder from the UI. Overrides win over search, survive `--force`,
+and take effect on the next sync.
 
 ## Development
 
@@ -190,19 +247,20 @@ build, `python manage.py serve` alone runs the whole app.
 ## Layout
 
 ```
-main.py               start everything: config.json, frontend build, server
+main.py               start everything: launcher, frontend build, server
 manage.py             CLI entry point
 config.json           your library locations (gitignored, see config.example.json)
 backend/app/
-  config.py           settings from config.json and .env
-  setup.py            first-run folder prompt and frontend build
+  config.py           settings from config.json and .env; the movies/series split
+  setup.py            config.json helpers, folder picker and frontend build
+  tui.py              the launcher menu (Textual)
   scanner.py          library scan + folder-name parsing
-  tmdb.py             TMDB client and match scoring
+  tmdb.py             TMDB client (film and TV) and match scoring
   cache.py            atomic JSON persistence
   images.py           on-disk artwork store and prefetch
   sync.py             cache/disk diff and fetch orchestration
   main.py             FastAPI routes
   cli.py              scan / sync / status / serve
 frontend/src/         SolidJS UI
-data/                 cache.json, overrides.json, images/ (gitignored)
+data/                 cache.json, cache-series.json, overrides*.json, images/ (gitignored)
 ```

@@ -7,6 +7,7 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 
+from .config import KIND_LABELS, MediaKind
 from .models import ScannedEntry
 
 VIDEO_EXTS = {
@@ -53,6 +54,22 @@ LANGUAGE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Season and pack markers, stripped from series names only: "S01", "S01-S09",
+# "S01E02", "Season 1", "Seasons 1-3", "Complete". Applied to the whole string
+# rather than per token because "Season 1" would otherwise leave a bare "1" behind.
+# A bare "Series" is left alone — "A Series of Unfortunate Events" is a real show.
+SEASON_RE = re.compile(
+    r"""\s*\b(?:
+        s\d{1,2}\s*-\s*s?\d{1,2} |
+        s\d{1,2}e\d{1,3} |
+        s\d{1,2} |
+        seasons?\s*\d{1,2}\s*-\s*\d{1,2} |
+        seasons?\s*\d{1,2} |
+        complete(?:\s+series)?
+    )\b""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
 MAX_PLAUSIBLE_YEAR = dt.date.today().year + 2
 
 
@@ -77,7 +94,7 @@ def _tidy(text: str) -> str:
     return text.strip(" .,-_&")
 
 
-def parse_name(raw_name: str) -> tuple[str, int | None]:
+def parse_name(raw_name: str, kind: MediaKind = "movies") -> tuple[str, int | None]:
     """Turn a release folder name into a best-guess (title, year)."""
     name = BRACKET_RE.sub(" ", raw_name)
 
@@ -86,6 +103,9 @@ def parse_name(raw_name: str) -> tuple[str, int | None]:
     if " " not in name.strip() and name.count(".") >= 2:
         name = name.replace(".", " ")
     name = name.replace("_", " ")
+
+    if kind == "series":
+        name = SEASON_RE.sub(" ", name)
 
     year: int | None = None
     paren_years = list(PAREN_YEAR_RE.finditer(name))
@@ -113,13 +133,17 @@ def parse_name(raw_name: str) -> tuple[str, int | None]:
     return title, year
 
 
-def scan_library(movies_dir: Path) -> list[ScannedEntry]:
-    """List directories and loose video files one level below `movies_dir`."""
-    if not movies_dir.exists():
-        raise FileNotFoundError(f"Movie library not found: {movies_dir}")
+def scan_library(root: Path, kind: MediaKind = "movies") -> list[ScannedEntry]:
+    """List directories and loose video files one level below `root`.
+
+    For series that one level is the show folder — seasons and episodes live
+    below it and come from TMDB, not from disk.
+    """
+    if not root.exists():
+        raise FileNotFoundError(f"{KIND_LABELS[kind].capitalize()} library not found: {root}")
 
     entries: list[ScannedEntry] = []
-    for child in sorted(movies_dir.iterdir(), key=lambda p: p.name.lower()):
+    for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
         if child.name.startswith("."):
             continue
         if child.is_dir():
@@ -130,7 +154,7 @@ def scan_library(movies_dir: Path) -> list[ScannedEntry]:
             continue
 
         source = Path(child.name).stem if is_file else child.name
-        title, year = parse_name(source)
+        title, year = parse_name(source, kind)
         entries.append(
             ScannedEntry(
                 dir_name=key,
@@ -143,7 +167,9 @@ def scan_library(movies_dir: Path) -> list[ScannedEntry]:
     return entries
 
 
-def scan_libraries(movies_dirs: Sequence[Path]) -> tuple[list[ScannedEntry], list[str]]:
+def scan_libraries(
+    roots: Sequence[Path], kind: MediaKind = "movies"
+) -> tuple[list[ScannedEntry], list[str]]:
     """Scan every configured library root and merge the results.
 
     Returns the merged entries plus a note for everything that was skipped:
@@ -156,20 +182,21 @@ def scan_libraries(movies_dirs: Sequence[Path]) -> tuple[list[ScannedEntry], lis
     Every root missing at once is still an error: that is a broken config, not a
     library that happens to be empty.
     """
-    if not movies_dirs:
-        raise FileNotFoundError("No movie library configured")
+    label = KIND_LABELS[kind]
+    if not roots:
+        raise FileNotFoundError(f"No {label} library configured")
 
-    present = [path for path in movies_dirs if path.exists()]
+    present = [path for path in roots if path.exists()]
     if not present:
         raise FileNotFoundError(
-            "Movie library not found: " + ", ".join(str(path) for path in movies_dirs)
+            f"{label.capitalize()} library not found: " + ", ".join(str(path) for path in roots)
         )
 
-    notes = [f"not there right now, skipped: {path}" for path in movies_dirs if path not in present]
+    notes = [f"not there right now, skipped: {path}" for path in roots if path not in present]
     entries: list[ScannedEntry] = []
     seen: set[str] = set()
     for root in present:
-        for entry in scan_library(root):
+        for entry in scan_library(root, kind):
             if entry.dir_name in seen:
                 notes.append(f"folder name already seen, skipped: {entry.path}")
                 continue

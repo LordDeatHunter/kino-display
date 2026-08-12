@@ -1,3 +1,4 @@
 {
-  "movies_dirs": ["../Movies", "D:/More Movies"]
+  "movies_dirs": ["../Movies", "D:/More Movies"],
+  "series_dirs": ["D:/Series"]
 }
