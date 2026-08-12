@@ -52,7 +52,7 @@ def get_stats() -> dict[str, object]:
         "by_status": counts,
         "low_confidence": sum(1 for e in entries if e.low_confidence and e.status == "matched"),
         "synced_at": cache.synced_at,
-        "movies_dir": str(get_settings().movies_dir),
+        "movies_dirs": [str(path) for path in get_settings().movies_dirs],
     }
 
 

@@ -1,4 +1,4 @@
-"""First-run setup for `python main.py`: pick the library folder, build the UI, serve."""
+"""First-run setup for `python main.py`: pick the library folders, build the UI, serve."""
 
 from __future__ import annotations
 
@@ -10,7 +10,13 @@ import sys
 from pathlib import Path
 
 from .cache import write_atomic
-from .config import CONFIG_PATH, PROJECT_ROOT, env_movies_dir, get_settings
+from .config import (
+    CONFIG_PATH,
+    DEFAULT_MOVIES_DIR,
+    PROJECT_ROOT,
+    env_movies_dirs,
+    get_settings,
+)
 
 
 def load_config() -> dict:
@@ -36,10 +42,39 @@ def _as_path(raw: object) -> Path | None:
     return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
 
 
+def _as_paths(raw: object) -> list[Path]:
+    """Mirror Settings: a list of paths, or one os.pathsep-separated string."""
+    items = raw if isinstance(raw, list) else [raw]
+    paths: list[Path] = []
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        for part in item.split(os.pathsep):
+            path = _as_path(part)
+            if path is not None and path not in paths:
+                paths.append(path)
+    return paths
+
+
+def config_movies_dirs(config: dict) -> list[Path]:
+    """Folders saved in config.json, falling back to the legacy singular key."""
+    raw = config.get("movies_dirs", config.get("movies_dir"))
+    return _as_paths(raw)
+
+
+def save_movies_dirs(config: dict, values: list[str]) -> None:
+    config.pop("movies_dir", None)  # superseded by the list
+    config["movies_dirs"] = values
+    save_config(config)
+
+
 def _read_choice() -> str:
     """Block until the user presses Enter or Esc; anything else is ignored."""
     if not sys.stdin.isatty():
-        return "enter" if input().strip() == "" else "esc"
+        try:
+            return "enter" if input().strip() == "" else "esc"
+        except EOFError:
+            return "esc"
     while True:
         key = _read_key()
         if key in ("\r", "\n"):
@@ -73,7 +108,7 @@ def _read_key() -> str:
 
 
 def _typed_directory() -> Path | None:
-    raw = input("  movies folder (blank to use the default): ").strip().strip('"')
+    raw = input("  movies folder to add (blank to cancel): ").strip().strip('"')
     return Path(raw) if raw else None
 
 
@@ -103,70 +138,80 @@ def pick_directory(initial: Path | None) -> Path | None:
     return Path(chosen) if chosen else None
 
 
-def prompt_for_movies_dir(initial: Path | None, default: str | None) -> str | None:
-    """Run the Enter/Esc prompt.
+def _describe(paths: list[Path]) -> None:
+    for index, path in enumerate(paths, 1):
+        note = "" if path.is_dir() else "   (missing)"
+        print(f"  {index}. {path}{note}")
 
-    Returns the value to store in config.json, or None if the user declined and there
-    is no MOVIES_DIR in .env to fall back to.
+
+def current_movies_dirs(config: dict) -> tuple[list[Path], str]:
+    """The folders in force right now, plus a label for where they came from."""
+    saved = config_movies_dirs(config)
+    if saved:
+        return saved, CONFIG_PATH.name
+    from_env = _as_paths(env_movies_dirs() or [])
+    if from_env:
+        return from_env, "MOVIES_DIRS"
+    # The built-in default is only worth offering if it happens to be there; seeding a
+    # brand-new config.json with a folder that does not exist helps nobody.
+    fallback = [path for path in _as_paths([DEFAULT_MOVIES_DIR]) if path.is_dir()]
+    return fallback, "the default"
+
+
+def prompt_for_movies_dirs(current: list[Path], source: str) -> list[Path]:
+    """Show the folders in use and add more, one per round, until the user is done.
+
+    Returns the folders to use — the ones passed in, unchanged, if the user just
+    presses Esc.
     """
-    print()
-    print("A folder picker window will open.")
-    print("  [Enter]  open the picker and choose your movies folder")
-    if default is None:
-        print("  [Esc]    quit — .env sets no MOVIES_DIR, so a folder has to be picked")
-    else:
-        print(f"  [Esc]    cancel and use the default from .env ({_as_path(default)})")
-    if not sys.stdin.isatty():
-        print("  (not a terminal — press Enter for the picker, or type anything else to cancel)")
+    chosen = list(current)
+    while True:
+        print()
+        if chosen:
+            # The source only describes the folders as they were found, not additions.
+            print(f"movies folders (from {source}):" if chosen == current else "movies folders:")
+            _describe(chosen)
+            print("  [Enter]  open the picker and add another folder")
+            print("  [Esc]    continue with these")
+        else:
+            print("No movies folders are set.")
+            print("  [Enter]  open the picker and choose your movies folder")
+            print("  [Esc]    continue anyway — there will be nothing to scan")
+        if not sys.stdin.isatty():
+            print("  (not a terminal — press Enter for the picker, or anything else to continue)")
 
-    if _read_choice() == "esc":
-        if default is None:
-            return None
-        print(f"\ncancelled — using {_as_path(default)} from .env")
-        return default
+        if _read_choice() == "esc":
+            return chosen
 
-    print("\nopening the folder picker...")
-    chosen = pick_directory(initial)
-    if chosen is not None:
-        return chosen.as_posix()
-    if default is None:
-        print("nothing selected.")
-        return None
-    print(f"nothing selected — using {_as_path(default)} from .env")
-    return default
+        print("\nopening the folder picker...")
+        picked = pick_directory(chosen[-1] if chosen else None)
+        resolved = None if picked is None else _as_path(picked.as_posix())
+        if resolved is None:
+            print("nothing selected.")
+        elif resolved in chosen:
+            print("already added.")
+        else:
+            chosen.append(resolved)
 
 
-def resolve_movies_dir() -> Path | None:
-    """Return the library folder, prompting for it once if the saved one is unusable.
+def resolve_movies_dirs() -> list[Path]:
+    """Show the library folders on every run, letting the user append to them.
 
-    None means the user declined the picker and nothing else supplies a folder.
+    Anything added is written to config.json — created on the spot if this is the
+    first run, appended to otherwise. Esc leaves the config exactly as it was.
     """
     config = load_config()
-    saved = _as_path(config.get("movies_dir"))
+    if "movies_dirs" not in config and config_movies_dirs(config):
+        # Upgrade the pre-list key in place so the saved value matches what is shown.
+        save_movies_dirs(config, [path.as_posix() for path in config_movies_dirs(config)])
+        print(f"note: 'movies_dir' in {CONFIG_PATH.name} is now the list 'movies_dirs'")
 
-    if saved is not None and saved.is_dir():
-        return saved
+    current, source = current_movies_dirs(config)
+    chosen = prompt_for_movies_dirs(current, source)
 
-    if not CONFIG_PATH.exists():
-        print(f"No {CONFIG_PATH.name} yet — let's set up your movie library.")
-    elif saved is None:
-        print(f"{CONFIG_PATH.name} has no usable 'movies_dir' — let's set it.")
-    else:
-        print(f"The movies folder saved in {CONFIG_PATH.name} is gone: {saved}")
-
-    value = prompt_for_movies_dir(saved, env_movies_dir())
-    if value is None:
-        return None
-
-    config["movies_dir"] = value
-    save_config(config)
-    print(f"saved to {CONFIG_PATH.name} — delete it to be asked again")
-
-    chosen = _as_path(value)
-    assert chosen is not None
-    if not chosen.is_dir():
-        # Prompting again would loop forever when the .env default is missing too.
-        print(f"warning: {chosen} does not exist — the library will be empty until it does")
+    if chosen != current:
+        save_movies_dirs(config, [path.as_posix() for path in chosen])
+        print(f"\nsaved to {CONFIG_PATH.name}")
     return chosen
 
 
@@ -202,21 +247,20 @@ def ensure_frontend_build() -> None:
 
 def main() -> int:
     try:
-        chosen = resolve_movies_dir()
+        chosen = resolve_movies_dirs()
     except KeyboardInterrupt:
         print("\ncancelled.")
         return 1
 
-    if chosen is None:
-        print("\nNo movies folder chosen, so there is nothing to serve.")
-        print("Run `python main.py` again, or set MOVIES_DIR in .env to have a default.")
-        return 1
-
     get_settings.cache_clear()
     settings = get_settings()
-    if settings.movies_dir != chosen:
-        print(f"note: MOVIES_DIR in the environment overrides {CONFIG_PATH.name}")
-    print(f"movies:  {settings.movies_dir}")
+    if settings.movies_dirs != chosen:
+        print(f"note: MOVIES_DIRS in the environment overrides {CONFIG_PATH.name}")
+    for index, path in enumerate(settings.movies_dirs):
+        note = "" if path.is_dir() else "   (missing — nothing will be scanned from it)"
+        print(f"{'movies:' if index == 0 else '':<9}{path}{note}")
+    if not settings.movies_dirs:
+        print("movies:  none set — add one with `python main.py` or in config.json")
     print(f"cache:   {settings.cache_path}")
 
     ensure_frontend_build()

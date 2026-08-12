@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 from .models import ScannedEntry
@@ -140,3 +141,40 @@ def scan_library(movies_dir: Path) -> list[ScannedEntry]:
             )
         )
     return entries
+
+
+def scan_libraries(movies_dirs: Sequence[Path]) -> tuple[list[ScannedEntry], list[str]]:
+    """Scan every configured library root and merge the results.
+
+    Returns the merged entries plus a note for everything that was skipped:
+
+    - a root that is not there right now — an unplugged drive is worth mentioning but
+      is not a reason to refuse to scan the roots that are;
+    - a folder name an earlier root already used, since the cache is keyed by folder
+      name alone and can only hold one of them.
+
+    Every root missing at once is still an error: that is a broken config, not a
+    library that happens to be empty.
+    """
+    if not movies_dirs:
+        raise FileNotFoundError("No movie library configured")
+
+    present = [path for path in movies_dirs if path.exists()]
+    if not present:
+        raise FileNotFoundError(
+            "Movie library not found: " + ", ".join(str(path) for path in movies_dirs)
+        )
+
+    notes = [f"not there right now, skipped: {path}" for path in movies_dirs if path not in present]
+    entries: list[ScannedEntry] = []
+    seen: set[str] = set()
+    for root in present:
+        for entry in scan_library(root):
+            if entry.dir_name in seen:
+                notes.append(f"folder name already seen, skipped: {entry.path}")
+                continue
+            seen.add(entry.dir_name)
+            entries.append(entry)
+
+    entries.sort(key=lambda entry: entry.dir_name.lower())
+    return entries, notes

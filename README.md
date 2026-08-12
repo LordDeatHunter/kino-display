@@ -17,20 +17,33 @@ python main.py              # http://127.0.0.1:8000
 `main.py` is the whole startup path: it works out where your library is, builds the web UI if
 `frontend/dist` isn't there yet, and starts the server.
 
-On the first run there is no `config.json`, so it asks where your movies are. A folder picker
-window will open — press **Enter** to open it and choose the folder. **Esc** cancels and falls
-back to `MOVIES_DIR` from `.env`; if `.env` doesn't set one there is no default, so picking a
-folder is required and Esc just quits.
+Every run starts by listing your movies folders, so you can see and extend them without editing
+anything:
 
-Either way the answer is written to `config.json` and reused from then on; delete that file (or
-edit it) to pick a different folder. If the saved folder has since been moved or deleted, the
-prompt comes back automatically.
+```
+movies folders (from config.json):
+  1. D:\Movies
+  2. E:\Movies 2   (missing)
+  [Enter]  open the picker and add another folder
+  [Esc]    continue with these
+```
+
+**Esc** carries on with exactly what's listed and writes nothing. **Enter** opens a folder picker
+and appends what you choose, then asks again — so you can add several in a row. Additions are
+saved to `config.json`, which is created on the spot if this is the first run.
+
+The list itself comes from `config.json`, or from `MOVIES_DIRS` in `.env` if there's no config
+yet, or is empty on a machine where neither is set.
 
 ```json
 {
-  "movies_dir": "D:/Movies"
+  "movies_dirs": ["D:/Movies", "E:/Movies 2"]
 }
 ```
+
+The folders are scanned in order and merged into one library. The older singular `"movies_dir"`
+key still works and is upgraded to the list on the next run. To remove or reorder folders, edit
+`config.json` (or delete it to start over).
 
 Then fetch metadata — once, and after that only for folders that are new:
 
@@ -44,7 +57,7 @@ python manage.py sync
 | --- | --- |
 | `API_READ_ACCESS_TOKEN` | TMDB v4 bearer token — what the app uses |
 | `API_KEY` | TMDB v3 key, used only if no bearer token is set |
-| `MOVIES_DIR` | your library — normally set via `config.json`, which wins over `.env`. Set here it becomes the default the first-run prompt offers |
+| `MOVIES_DIRS` | your library folders, separated by `;` on Windows (`:` elsewhere) — normally set via `config.json`, which wins over `.env`. Set here it becomes the default the first-run prompt offers |
 | `DATA_DIR` | where `cache.json` and `overrides.json` live (default `data`) |
 | `HOST` / `PORT` | server bind address |
 | `TMDB_LANGUAGE` / `MAX_CONCURRENCY` | metadata language, parallel request cap |
@@ -92,6 +105,14 @@ for the chosen field always sort to the end, in either direction.
 - folder on disk but not in cache → fetched
 - folder in cache but gone from disk → dropped
 - a renamed folder therefore reads as one removal plus one addition
+
+Since the key is the folder name alone, the same name in two library folders is one entry: the
+first folder listed in `config.json` wins and `python manage.py scan` prints the path it skipped.
+
+A library folder that isn't there right now — an unplugged drive, say — is skipped with a note
+instead of failing the scan, and its cached films stay in the cache rather than reading as several
+hundred deletions. Only when *every* library folder is missing does a scan error out, since that's
+a broken config rather than an offline disk.
 
 Writes are atomic and checkpointed every 25 entries, so an interrupted sync never corrupts the
 cache.
@@ -171,7 +192,7 @@ build, `python manage.py serve` alone runs the whole app.
 ```
 main.py               start everything: config.json, frontend build, server
 manage.py             CLI entry point
-config.json           your library location (gitignored, see config.example.json)
+config.json           your library locations (gitignored, see config.example.json)
 backend/app/
   config.py           settings from config.json and .env
   setup.py            first-run folder prompt and frontend build

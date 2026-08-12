@@ -10,7 +10,7 @@ from pathlib import Path
 from .cache import load_cache, load_overrides, save_cache
 from .config import Settings
 from .models import CacheEntry, CacheFile, ScannedEntry, SyncReport
-from .scanner import scan_library
+from .scanner import scan_libraries
 from .tmdb import TmdbClient, TmdbError
 
 CHECKPOINT_EVERY = 25
@@ -21,6 +21,11 @@ ProgressCallback = Callable[[int, int, str], None]
 
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _under_any(path: str, roots: list[Path]) -> bool:
+    candidate = Path(path)
+    return any(candidate.is_relative_to(root) for root in roots)
 
 
 def _needs_fetch(
@@ -98,8 +103,9 @@ async def run_sync(
     progress: ProgressCallback | None = None,
 ) -> SyncReport:
     """Bring the cache in line with the library, fetching as little as possible."""
-    scanned = scan_library(Path(settings.movies_dir))
+    scanned, _notes = scan_libraries(settings.movies_dirs)
     by_name = {item.dir_name: item for item in scanned}
+    offline = [path for path in settings.movies_dirs if not path.exists()]
     cache = load_cache(settings.cache_path)
     overrides = load_overrides(settings.overrides_path)
     only_set = set(only) if only is not None else None
@@ -108,11 +114,14 @@ async def run_sync(
 
     report = SyncReport()
 
-    # Folders that vanished from disk drop out of the cache.
-    for dir_name in list(cache.entries):
-        if dir_name not in by_name:
-            del cache.entries[dir_name]
-            report.removed.append(dir_name)
+    # Folders that vanished from disk drop out of the cache — unless the library folder
+    # they live in is the thing that vanished, which is an unplugged drive, not 300
+    # deletions.
+    for dir_name, entry in list(cache.entries.items()):
+        if dir_name in by_name or _under_any(entry.path, offline):
+            continue
+        del cache.entries[dir_name]
+        report.removed.append(dir_name)
 
     todo: list[ScannedEntry] = []
     for item in scanned:
@@ -169,8 +178,8 @@ async def run_sync(
 
 async def resolve_single(settings: Settings, dir_name: str) -> CacheEntry | None:
     """Refetch one folder (used after an override is set from the UI)."""
-    scanned = {item.dir_name: item for item in scan_library(Path(settings.movies_dir))}
-    item = scanned.get(dir_name)
+    entries, _notes = scan_libraries(settings.movies_dirs)
+    item = {entry.dir_name: entry for entry in entries}.get(dir_name)
     if item is None:
         return None
 

@@ -6,10 +6,15 @@ import json
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import field_validator
-from pydantic_settings import BaseSettings, JsonConfigSettingsSource, SettingsConfigDict
+from pydantic import AliasChoices, Field, field_validator
+from pydantic_settings import (
+    BaseSettings,
+    JsonConfigSettingsSource,
+    NoDecode,
+    SettingsConfigDict,
+)
 from pydantic_settings.sources import DotEnvSettingsSource, PydanticBaseSettingsSource
 
 # backend/app/config.py -> backend/app -> backend -> project root
@@ -17,6 +22,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # Written by `python main.py`; see config.example.json.
 CONFIG_PATH = PROJECT_ROOT / "config.json"
+
+DEFAULT_MOVIES_DIR = "../Movies"
 
 
 class _TolerantJsonSource(JsonConfigSettingsSource):
@@ -42,7 +49,13 @@ class Settings(BaseSettings):
     api_read_access_token: str = ""
     api_key: str = ""
 
-    movies_dir: Path = Path("../Movies")
+    # NoDecode: an env var here is a plain path (or several joined by os.pathsep),
+    # not the JSON list pydantic-settings would otherwise expect for a list field.
+    # The legacy singular "movies_dir" key/variable is still accepted.
+    movies_dirs: Annotated[list[Path], NoDecode] = Field(
+        default_factory=lambda: [Path(DEFAULT_MOVIES_DIR)],
+        validation_alias=AliasChoices("movies_dirs", "movies_dir"),
+    )
     data_dir: Path = Path("data")
 
     host: str = "127.0.0.1"
@@ -69,10 +82,30 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
-    @field_validator("movies_dir", "data_dir", mode="after")
+    @field_validator("movies_dirs", mode="before")
+    @classmethod
+    def _as_list(cls, value: Any) -> Any:
+        """Accept a list of paths, or one string holding os.pathsep-separated paths."""
+        if isinstance(value, (str, Path)):
+            value = str(value).split(os.pathsep)
+        if not isinstance(value, (list, tuple)):
+            return value
+        return [item for item in (str(part).strip() for part in value) if item]
+
+    @field_validator("data_dir", mode="after")
     @classmethod
     def _resolve(cls, value: Path) -> Path:
         return value if value.is_absolute() else (PROJECT_ROOT / value).resolve()
+
+    @field_validator("movies_dirs", mode="after")
+    @classmethod
+    def _resolve_each(cls, value: list[Path]) -> list[Path]:
+        resolved: list[Path] = []
+        for path in value:
+            full = path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+            if full not in resolved:
+                resolved.append(full)
+        return resolved
 
     @property
     def cache_path(self) -> Path:
@@ -103,14 +136,16 @@ def get_settings() -> Settings:
     return Settings()
 
 
-def env_movies_dir() -> str | None:
-    """MOVIES_DIR as supplied by the environment or .env — None if neither sets it.
+def env_movies_dirs() -> list[str] | None:
+    """MOVIES_DIRS as supplied by the environment or .env — None if neither sets it.
 
     This is the default the first-run prompt falls back to; with no default, main.py
-    insists on the folder picker.
+    insists on the folder picker. Several folders are joined by os.pathsep, and the
+    old singular MOVIES_DIR still works.
     """
-    raw = os.environ.get("MOVIES_DIR")
+    raw = os.environ.get("MOVIES_DIRS") or os.environ.get("MOVIES_DIR")
     if raw is None:
-        value = DotEnvSettingsSource(Settings)().get("movies_dir")
+        value = DotEnvSettingsSource(Settings)().get("movies_dirs")
         raw = value if isinstance(value, str) else None
-    return (raw or "").strip() or None
+    parts = [part.strip() for part in (raw or "").split(os.pathsep)]
+    return [part for part in parts if part] or None

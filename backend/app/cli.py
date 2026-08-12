@@ -5,19 +5,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from pathlib import Path
 
 from .cache import load_cache
 from .config import get_settings
 from .images import cached_files, prefetch
 from .models import CacheEntry
-from .scanner import scan_library
+from .scanner import scan_libraries
 from .sync import run_sync
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
     settings = get_settings()
-    entries = scan_library(Path(settings.movies_dir))
+    entries, notes = scan_libraries(settings.movies_dirs)
     missing_year = 0
     for entry in entries:
         if entry.parsed_year is None:
@@ -25,7 +24,11 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         if args.verbose or entry.parsed_year is None or args.all:
             year = entry.parsed_year or "----"
             print(f"{year}  {entry.parsed_title:<50}  <- {entry.dir_name}")
-    print(f"\n{len(entries)} entries in {settings.movies_dir} ({missing_year} without a year)")
+    print(f"\n{len(entries)} entries ({missing_year} without a year) in:")
+    for path in settings.movies_dirs:
+        print(f"  {path}")
+    for note in notes:
+        print(f"  {note}")
     return 0
 
 
