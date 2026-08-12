@@ -12,16 +12,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Label, ListItem, ListView, Static
 
-from .config import CONFIG_PATH, MediaKind, env_library_dirs
+from .config import CONFIG_PATH, MEDIA_KINDS, MediaKind, env_library_dirs
 from .setup import config_dirs, current_dirs, load_config, pick_directory, resolve_path, save_dirs
 
 KIND_TITLES: dict[MediaKind, str] = {"movies": "Movies", "series": "Series"}
+
+
+def highlight_row(listing: ListView, index: int) -> None:
+    """Select a row and make sure it is actually drawn as selected.
+
+    Assigning the index it already holds — which is what a fresh list on row 0, or
+    a rebuild that lands back on the same row, does — never fires the watcher that
+    paints the highlight, so the row is live but looks inert. Clearing it first
+    forces the repaint.
+    """
+    listing.index = None
+    listing.index = index
 
 
 def _summary(kind: MediaKind) -> str:
@@ -36,14 +49,76 @@ def _summary(kind: MediaKind) -> str:
 
 class MenuItem(ListItem):
     def __init__(self, action: str, title: str, hint: str) -> None:
-        super().__init__(Label(f"[b]{title}[/b]\n[dim]{hint}[/dim]"))
+        self.heading = title
+        self.label = Label(self._markup(hint))
+        super().__init__(self.label, id=f"menu-{action}")
         self.action_name = action
+
+    def _markup(self, hint: str) -> str:
+        return f"[b]{self.heading}[/b]\n[dim]{hint}[/dim]"
+
+    def set_hint(self, hint: str) -> None:
+        self.label.update(self._markup(hint))
 
 
 class PathItem(ListItem):
-    def __init__(self, index: int | None, markup: str) -> None:
-        super().__init__(Label(markup))
+    """One configured folder, with a tick box you toggle with Space."""
+
+    def __init__(self, index: int | None, path: Path | None, markup: str) -> None:
+        self.label = Label(markup)
+        super().__init__(self.label)
         self.path_index = index
+        self.path = path
+        self.checked = False
+
+    def redraw(self) -> None:
+        if self.path is None:
+            return
+        box = "[b green][x][/]" if self.checked else "[dim][ ][/]"
+        missing = "" if self.path.is_dir() else "  [yellow](missing)[/yellow]"
+        self.label.update(f"{box} {self.path}{missing}")
+
+    def toggle(self) -> None:
+        if self.path is None:
+            return
+        self.checked = not self.checked
+        self.redraw()
+
+
+class SourceList(ListView):
+    """The folder list. Space ticks a row; arrowing past the end leaves the list."""
+
+    BINDINGS = [Binding("space", "toggle_check", "Tick / untick")]
+
+    def action_toggle_check(self) -> None:
+        item = self.highlighted_child
+        if isinstance(item, PathItem):
+            item.toggle()
+            self.screen.refresh_note()  # type: ignore[attr-defined]
+
+    def action_cursor_down(self) -> None:
+        # At the bottom of the list, carry on down into the buttons rather than
+        # stopping dead.
+        if self.index is not None and self.index >= len(self.children) - 1:
+            self.screen.focus_actions()  # type: ignore[attr-defined]
+            return
+        super().action_cursor_down()
+
+
+class ActionButton(Button):
+    """A button on the action row, reachable by walking down out of the list."""
+
+    def key_up(self, event: events.Key) -> None:
+        event.stop()
+        self.screen.focus_list()  # type: ignore[attr-defined]
+
+    def key_left(self, event: events.Key) -> None:
+        event.stop()
+        self.screen.focus_previous(ActionButton)
+
+    def key_right(self, event: events.Key) -> None:
+        event.stop()
+        self.screen.focus_next(ActionButton)
 
 
 class SourcesScreen(Screen[None]):
@@ -52,8 +127,8 @@ class SourcesScreen(Screen[None]):
     BINDINGS = [
         Binding("escape", "back", "Back"),
         Binding("a", "add_source", "Add source"),
-        Binding("d", "delete_source", "Remove selected"),
-        Binding("delete", "delete_source", "Remove selected", show=False),
+        Binding("d", "delete_source", "Remove"),
+        Binding("delete", "delete_source", "Remove", show=False),
     ]
 
     def __init__(self, kind: MediaKind) -> None:
@@ -65,25 +140,59 @@ class SourcesScreen(Screen[None]):
         yield Header()
         yield Static(f"{KIND_TITLES[self.kind]} sources", classes="heading")
         yield Static("", id="source-note", classes="note")
-        yield ListView(id="sources")
+        yield SourceList(id="sources")
         yield Horizontal(
-            Button("＋ Add source", id="add", variant="primary"),
-            Button("🗑 Remove selected", id="remove"),
-            Button("← Back", id="back"),
+            ActionButton("＋ Add source", id="add", variant="primary"),
+            ActionButton("🗑 Remove selected", id="remove"),
+            ActionButton("← Back", id="back"),
             classes="actions",
         )
         yield Footer()
 
-    def on_mount(self) -> None:
-        self.refresh_paths()
+    async def on_mount(self) -> None:
+        await self.refresh_paths()
+        self.query_one("#sources", SourceList).focus()
 
-    def refresh_paths(self, keep: int = 0) -> None:
-        config = load_config()
-        self.paths = config_dirs(config, self.kind)
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Enter, or a mouse click, ticks a row the same way Space does."""
+        if isinstance(event.item, PathItem):
+            event.item.toggle()
+            self.refresh_note()
+
+    # ---- focus ----------------------------------------------------------
+
+    def focus_actions(self) -> None:
+        """Walking down out of the list lands on the first button."""
+        self.query_one("#add", ActionButton).focus()
+
+    def focus_list(self) -> None:
+        """Walking up out of the buttons returns to the last row."""
+        listing = self.query_one("#sources", SourceList)
+        listing.focus()
+        if listing.children:
+            highlight_row(listing, len(listing.children) - 1)
+
+    # ---- state ----------------------------------------------------------
+
+    def _items(self) -> list[PathItem]:
+        return [
+            item
+            for item in self.query_one("#sources", SourceList).children
+            if isinstance(item, PathItem) and item.path_index is not None
+        ]
+
+    def ticked(self) -> list[PathItem]:
+        return [item for item in self._items() if item.checked]
+
+    def refresh_note(self) -> None:
         note = self.query_one("#source-note", Static)
-
-        if self.paths:
-            note.update(f"[dim]saved in {CONFIG_PATH.name}[/dim]")
+        ticked = len(self.ticked())
+        if ticked:
+            note.update(f"[b green]{ticked} ticked[/] [dim]· D removes them[/dim]")
+        elif self.paths:
+            note.update(
+                f"[dim]saved in {CONFIG_PATH.name} · Space ticks a folder, D removes[/dim]"
+            )
         elif env_library_dirs(self.kind):
             # Nothing in config.json, but the environment supplies folders anyway;
             # adding one here starts a config.json list that then wins over it.
@@ -93,16 +202,29 @@ class SourcesScreen(Screen[None]):
         else:
             note.update("[dim]no folders configured yet[/dim]")
 
-        listing = self.query_one("#sources", ListView)
-        listing.clear()
-        if not self.paths:
-            listing.append(PathItem(None, "[dim]nothing here yet — press [b]A[/b] to add a folder[/dim]"))
-            return
+    async def refresh_paths(self, keep: int = 0) -> None:
+        """Rebuild the list from config.json.
 
-        for index, path in enumerate(self.paths):
-            missing = "" if path.is_dir() else "  [yellow](missing)[/yellow]"
-            listing.append(PathItem(index, f"{path}{missing}"))
-        listing.index = min(keep, len(self.paths) - 1)
+        The clear and the appends are awaited: they are queued operations, and
+        setting the highlight before the new rows have mounted leaves the list
+        looking like nothing is selected.
+        """
+        self.paths = config_dirs(load_config(), self.kind)
+
+        listing = self.query_one("#sources", SourceList)
+        await listing.clear()
+        if not self.paths:
+            await listing.append(
+                PathItem(None, None, "[dim]nothing here yet — press [b]A[/b] to add a folder[/dim]")
+            )
+            highlight_row(listing, 0)
+        else:
+            for index, path in enumerate(self.paths):
+                item = PathItem(index, path, "")
+                await listing.append(item)
+                item.redraw()
+            highlight_row(listing, min(keep, len(self.paths) - 1))
+        self.refresh_note()
 
     def _save(self, paths: list[Path]) -> None:
         save_dirs(load_config(), self.kind, [path.as_posix() for path in paths])
@@ -110,7 +232,7 @@ class SourcesScreen(Screen[None]):
     def action_back(self) -> None:
         self.app.pop_screen()
 
-    def action_add_source(self) -> None:
+    async def action_add_source(self) -> None:
         # The picker is a Tk dialog, so the TUI has to let go of the terminal
         # while it is open; Textual redraws itself on the way back.
         with self.app.suspend():
@@ -129,26 +251,34 @@ class SourcesScreen(Screen[None]):
             return
 
         self._save([*self.paths, resolved])
-        self.refresh_paths(keep=len(self.paths))
+        await self.refresh_paths(keep=len(self.paths))
         self.notify(f"Added {resolved}")
 
-    def action_delete_source(self) -> None:
-        listing = self.query_one("#sources", ListView)
-        item = listing.highlighted_child
-        if not isinstance(item, PathItem) or item.path_index is None:
-            return
+    async def action_delete_source(self) -> None:
+        """Remove every ticked folder, or just the highlighted one if none are."""
+        chosen = self.ticked()
+        if not chosen:
+            item = self.query_one("#sources", SourceList).highlighted_child
+            if not isinstance(item, PathItem) or item.path_index is None:
+                return
+            chosen = [item]
 
-        index = item.path_index
-        removed = self.paths[index]
-        self._save([path for position, path in enumerate(self.paths) if position != index])
-        self.refresh_paths(keep=max(0, index - 1))
-        self.notify(f"Removed {removed}")
+        doomed = {item.path_index for item in chosen}
+        first = min(doomed)  # type: ignore[type-var]
+        removed = [self.paths[index] for index in sorted(doomed)]  # type: ignore[index]
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self._save([path for position, path in enumerate(self.paths) if position not in doomed])
+        await self.refresh_paths(keep=max(0, first - 1))
+        if len(removed) == 1:
+            self.notify(f"Removed {removed[0]}")
+        else:
+            self.notify(f"Removed {len(removed)} folders")
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "add":
-            self.action_add_source()
+            await self.action_add_source()
         elif event.button.id == "remove":
-            self.action_delete_source()
+            await self.action_delete_source()
         else:
             self.action_back()
 
@@ -172,15 +302,24 @@ class MainScreen(Screen[None]):
         )
         yield Footer()
 
+    def on_mount(self) -> None:
+        self.select_row(0)
+
     def on_screen_resume(self) -> None:
-        """Folder counts can have changed while a library screen was open."""
+        """Folder counts can have changed while a library screen was open.
+
+        The rows are updated in place: clearing and re-adding them drops the
+        highlight from the selected row, leaving the menu looking like nothing is
+        selected at all.
+        """
+        for kind in MEDIA_KINDS:
+            self.query_one(f"#menu-{kind}", MenuItem).set_hint(_summary(kind))
+        self.select_row(self.query_one("#menu", ListView).index or 0)
+
+    def select_row(self, index: int) -> None:
         listing = self.query_one("#menu", ListView)
-        keep = listing.index or 0
-        listing.clear()
-        listing.append(MenuItem("movies", "Movies", _summary("movies")))
-        listing.append(MenuItem("series", "Series", _summary("series")))
-        listing.append(MenuItem("start", "Start", "launch the web app"))
-        listing.index = keep
+        listing.focus()
+        highlight_row(listing, index)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
@@ -230,6 +369,7 @@ class LauncherApp(App[bool]):
 
     .actions { width: 100%; height: auto; padding: 1 2; }
     .actions Button { margin-right: 2; }
+    .actions Button:focus { text-style: bold reverse; }
     """
 
     def on_mount(self) -> None:

@@ -41,17 +41,23 @@ Inside a library's screen:
 
 ```
   Series sources
-  saved in config.json
+  2 ticked · D removes them
 
-  D:\Series
-  E:\Series 2   (missing)
+  [x] D:\Series
+  [ ] E:\Series 2   (missing)
+  [x] F:\Anime
 
-  [A] Add source   [D] Remove selected   [Esc] Back
+  ＋ Add source    🗑 Remove selected    ← Back
 ```
 
-**A** opens the OS folder picker (the TUI steps aside while it's up) and appends what you choose.
-**D** removes the highlighted folder. **Esc** goes back. Every change is written to `config.json`
-immediately — there's no save step.
+- **Space** (or **Enter**, or a click) ticks the highlighted folder. Tick as many as you like.
+- **D** removes everything ticked — or just the highlighted row if nothing is.
+- **A** opens the OS folder picker (the TUI steps aside while it's up) and appends what you choose.
+- **↓** past the last folder moves onto the buttons; **←/→** walk along them and **↑** goes back to
+  the list. The buttons do the same as the keys, for when a mouse is closer.
+- **Esc** goes back to the main menu.
+
+Every change is written to `config.json` immediately — there's no save step.
 
 The starting list comes from `config.json`, or from `MOVIES_DIRS` / `SERIES_DIRS` in `.env` if the
 config has nothing for that library, or is empty when neither is set.
