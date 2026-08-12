@@ -1,6 +1,7 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js'
+import { confirmMatches } from '../api'
 import type { CacheEntry, MovieGroup } from '../types'
-import { formatRuntime, imageUrl } from '../util'
+import { entryNeedsAttention, formatRuntime, imageUrl } from '../util'
 import FixMatch from './FixMatch'
 
 interface Props {
@@ -10,9 +11,24 @@ interface Props {
 }
 
 export default function MovieModal(props: Props) {
-  const [showFix, setShowFix] = createSignal(props.group.needsAttention)
+  const [showFix, setShowFix] = createSignal(false)
   const [posterBroken, setPosterBroken] = createSignal(false)
+  const [confirming, setConfirming] = createSignal(false)
   const movie = () => props.group.tmdb
+
+  const flagged = () => props.group.entries.filter(entryNeedsAttention)
+  const worstConfidence = () =>
+    Math.min(...props.group.entries.map((entry) => entry.match_confidence))
+
+  const accept = async () => {
+    setConfirming(true)
+    try {
+      const updated = await confirmMatches(flagged().map((entry) => entry.dir_name))
+      updated.forEach(props.onEntryUpdated)
+    } finally {
+      setConfirming(false)
+    }
+  }
 
   const onKey = (event: KeyboardEvent) => {
     if (event.key === 'Escape') props.onClose()
@@ -95,6 +111,41 @@ export default function MovieModal(props: Props) {
               </p>
             </div>
           </div>
+
+          <Show when={props.group.needsAttention}>
+            <div class="verify">
+              <div class="verify-text">
+                <strong>Is this the right film?</strong>
+                <Show
+                  when={movie()}
+                  fallback={<span>No TMDB match was found for this folder — search for it below.</span>}
+                >
+                  <span>
+                    Picked automatically
+                    {Number.isFinite(worstConfidence()) && worstConfidence() > 0
+                      ? ` with ${(worstConfidence() * 100).toFixed(0)}% confidence`
+                      : ''}
+                    , so it's worth a glance. Accepting pins it — the flag clears and a
+                    re-sync won't change it.
+                  </span>
+                </Show>
+              </div>
+              <div class="verify-actions">
+                <Show when={movie()}>
+                  <button type="button" disabled={confirming()} onClick={accept}>
+                    {confirming() ? 'Accepting…' : '✓ Looks right'}
+                  </button>
+                </Show>
+                <button
+                  type="button"
+                  class="ghost"
+                  onClick={() => setShowFix((value) => !value)}
+                >
+                  {showFix() ? 'Hide search' : 'Pick a different film'}
+                </button>
+              </div>
+            </div>
+          </Show>
 
           <Show when={movie()?.overview}>
             <p class="overview">{movie()!.overview}</p>

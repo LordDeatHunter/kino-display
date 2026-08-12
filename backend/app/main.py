@@ -11,10 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .cache import load_overrides, save_overrides
+from .cache import load_cache, load_overrides, save_cache, save_overrides
 from .config import get_settings
 from .images import ImageError, ImageNotFound, fetch_image
-from .models import CacheEntry, CacheFile, OverrideRequest, SyncStatus
+from .models import CacheEntry, CacheFile, ConfirmRequest, OverrideRequest, SyncStatus
 from .sync import read_cache, resolve_single, run_sync
 from .tmdb import TmdbClient, TmdbError
 
@@ -180,6 +180,39 @@ async def clear_override(dir_name: str) -> CacheEntry:
 @app.get("/api/overrides")
 def get_overrides() -> dict[str, int | None]:
     return load_overrides(get_settings().overrides_path)
+
+
+@app.post("/api/confirm", response_model=list[CacheEntry])
+def confirm_matches(request: ConfirmRequest) -> list[CacheEntry]:
+    """Accept the match a folder already has.
+
+    Pins it as an override so it survives `--force` and never drifts back to a
+    search result, and clears the low-confidence flag. No network needed — the
+    metadata is already cached.
+    """
+    settings = get_settings()
+    cache = load_cache(settings.cache_path)
+    overrides = load_overrides(settings.overrides_path)
+
+    confirmed: list[CacheEntry] = []
+    missing: list[str] = []
+    for dir_name in request.dir_names:
+        entry = cache.entries.get(dir_name)
+        if entry is None or entry.tmdb is None:
+            missing.append(dir_name)
+            continue
+        overrides[dir_name] = entry.tmdb.id
+        entry.source = "override"
+        entry.match_confidence = 1.0
+        entry.low_confidence = False
+        confirmed.append(entry)
+
+    if not confirmed:
+        raise HTTPException(status_code=404, detail=f"Nothing to confirm: {missing}")
+
+    save_overrides(settings.overrides_path, overrides)
+    save_cache(settings.cache_path, cache)
+    return confirmed
 
 
 def _mount_frontend() -> None:

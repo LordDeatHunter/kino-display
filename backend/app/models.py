@@ -102,3 +102,9 @@ class SyncStatus(BaseModel):
 class OverrideRequest(BaseModel):
     dir_name: str
     tmdb_id: int | None = None
+
+
+class ConfirmRequest(BaseModel):
+    """Accept the match a folder already has, clearing its "check me" flag."""
+
+    dir_names: list[str]

@@ -33,5 +33,13 @@ export const setOverride = (dirName: string, tmdbId: number | null) =>
     body: JSON.stringify({ dir_name: dirName, tmdb_id: tmdbId }),
   })
 
+/** Accept the matches these folders already have, clearing their "check" flag. */
+export const confirmMatches = (dirNames: string[]) =>
+  request<CacheEntry[]>('/api/confirm', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ dir_names: dirNames }),
+  })
+
 export const clearOverride = (dirName: string) =>
   request<CacheEntry>(`/api/overrides/${encodeURIComponent(dirName)}`, { method: 'DELETE' })

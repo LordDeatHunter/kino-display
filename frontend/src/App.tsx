@@ -1,11 +1,11 @@
 import { For, Show, createMemo, createSignal, onCleanup } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
-import { fetchMovies, fetchSyncStatus, startSync } from './api'
+import { confirmMatches, fetchMovies, fetchSyncStatus, startSync } from './api'
 import MovieCard from './components/MovieCard'
 import MovieModal from './components/MovieModal'
 import Toolbar from './components/Toolbar'
 import type { CacheEntry, CacheFile, MovieGroup, SyncStatus } from './types'
-import { DEFAULT_DIRECTION, groupEntries, searchMatches, sortGroups } from './util'
+import { DEFAULT_DIRECTION, confirmableEntries, groupEntries, searchMatches, sortGroups } from './util'
 import type { SortDirection, SortMode } from './util'
 
 const EMPTY: CacheFile = { schema_version: 1, synced_at: '', image_base_url: '', entries: {} }
@@ -81,6 +81,22 @@ export default function App() {
     }
   }
 
+  const acceptAllShown = async () => {
+    const names = confirmableEntries(visible())
+    if (!names.length) return
+    const message =
+      `Accept the current match for ${names.length} folder${names.length === 1 ? '' : 's'}?\n\n` +
+      `Each one gets pinned to the film it already shows, so the flag clears and a re-sync ` +
+      `won't change it. You can still fix any of them individually afterwards.`
+    if (!confirm(message)) return
+    try {
+      const updated = await confirmMatches(names)
+      updated.forEach(applyEntry)
+    } catch (error) {
+      setLoadError(String(error))
+    }
+  }
+
   const applyEntry = (entry: CacheEntry) => {
     setCache(produce((draft) => {
       draft.entries[entry.dir_name] = entry
@@ -128,6 +144,8 @@ export default function App() {
         genres={genres()}
         issuesOnly={issuesOnly()}
         onIssuesOnly={setIssuesOnly}
+        confirmable={confirmableEntries(visible()).length}
+        onAcceptAll={acceptAllShown}
         shown={visible().length}
         total={allGroups().length}
         issues={issueCount()}

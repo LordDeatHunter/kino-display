@@ -535,6 +535,46 @@ select {
   text-decoration: underline;
 }
 
+/* "Is this the right film?" banner on flagged entries */
+.verify {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-top: 22px;
+  padding: 14px 16px;
+  border: 1px solid #4a3a1d;
+  border-left: 3px solid var(--warn);
+  border-radius: 10px;
+  background: rgb(240 166 58 / 0.07);
+}
+
+.verify-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  max-width: 64ch;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+
+.verify-text strong {
+  color: var(--text);
+  font-size: 14.5px;
+}
+
+.verify-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.accept-all {
+  white-space: nowrap;
+}
+
 .overview {
   margin: 20px 0 0;
   max-width: 76ch;

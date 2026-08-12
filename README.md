@@ -99,10 +99,24 @@ trailing roman numeral one (`SAW I` → `Saw`).
 Anything the search can't place is cached as `unmatched` and flagged in the UI; matches below
 0.75 confidence, or matches for folders with no year, are flagged as worth checking.
 
-## Fixing a bad match
+## Checking and fixing matches
 
-Either from the UI — open the film, click **Wrong movie?**, search TMDB, pick the right entry —
-or by hand in `data/overrides.json` (see `overrides.example.json`):
+Entries the matcher wasn't sure about get a `check` badge — matches below 0.75 confidence, or any
+folder with no year in its name. Tick **Needs attention** in the toolbar to see just those.
+
+Open one and the modal asks *"Is this the right film?"*:
+
+- **✓ Looks right** — accepts the match. It gets pinned as an override, so the badge clears and no
+  future sync (not even `--force`) can move it. No network needed.
+- **Pick a different film** — searches TMDB and lets you choose the correct entry.
+
+With the **Needs attention** filter on, an **Accept all N shown** button appears, which confirms
+everything currently listed in one go. It only ever acts on what's on screen, so narrow the list
+first (by genre or search) if you want to work through it in batches. Anything accepted by mistake
+can be re-fixed individually afterwards.
+
+Both paths write to `data/overrides.json` (see `overrides.example.json`), which you can also edit
+by hand:
 
 ```json
 {

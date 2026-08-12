@@ -14,6 +14,8 @@ interface Props {
   genres: string[]
   issuesOnly: boolean
   onIssuesOnly: (value: boolean) => void
+  confirmable: number
+  onAcceptAll: () => void
   shown: number
   total: number
   issues: number
@@ -140,6 +142,14 @@ export default function Toolbar(props: Props) {
           />
           Needs attention ({props.issues})
         </label>
+
+        {/* Only offered while the flagged list is on screen, so it always acts
+            on exactly what you can see. */}
+        <Show when={props.issuesOnly && props.confirmable > 0}>
+          <button type="button" class="accept-all" onClick={props.onAcceptAll}>
+            ✓ Accept all {props.confirmable} shown
+          </button>
+        </Show>
 
         <span class="synced">
           <Show when={props.syncedAt} fallback="never synced">

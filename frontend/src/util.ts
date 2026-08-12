@@ -21,6 +21,12 @@ export const yearOf = (entry: CacheEntry): number | null => {
 export const entryNeedsAttention = (entry: CacheEntry) =>
   entry.status !== 'matched' || entry.low_confidence
 
+/** Flagged folders that do have a match — the ones "accept" applies to. */
+export const confirmableEntries = (groups: MovieGroup[]): string[] =>
+  groups
+    .filter((group) => group.needsAttention && group.tmdb)
+    .flatMap((group) => group.entries.filter(entryNeedsAttention).map((entry) => entry.dir_name))
+
 /** Collapse folders that resolved to the same film into a single card. */
 export function groupEntries(entries: CacheEntry[]): MovieGroup[] {
   const groups = new Map<string, MovieGroup>()
