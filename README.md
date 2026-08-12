@@ -11,7 +11,31 @@ FastAPI backend, SolidJS frontend, one JSON file for storage.
 ```powershell
 pip install -r requirements.txt
 copy .env.example .env      # then fill in your TMDB token
-cd frontend && npm install && npm run build
+python main.py              # http://127.0.0.1:8000
+```
+
+`main.py` is the whole startup path: it works out where your library is, builds the web UI if
+`frontend/dist` isn't there yet, and starts the server.
+
+On the first run there is no `config.json`, so it asks where your movies are. A folder picker
+window will open — press **Enter** to open it and choose the folder. **Esc** cancels and falls
+back to `MOVIES_DIR` from `.env`; if `.env` doesn't set one there is no default, so picking a
+folder is required and Esc just quits.
+
+Either way the answer is written to `config.json` and reused from then on; delete that file (or
+edit it) to pick a different folder. If the saved folder has since been moved or deleted, the
+prompt comes back automatically.
+
+```json
+{
+  "movies_dir": "D:/Movies"
+}
+```
+
+Then fetch metadata — once, and after that only for folders that are new:
+
+```powershell
+python manage.py sync
 ```
 
 `.env` keys:
@@ -20,16 +44,20 @@ cd frontend && npm install && npm run build
 | --- | --- |
 | `API_READ_ACCESS_TOKEN` | TMDB v4 bearer token — what the app uses |
 | `API_KEY` | TMDB v3 key, used only if no bearer token is set |
-| `MOVIES_DIR` | your library (default `../Movies`); relative paths resolve from the project root |
+| `MOVIES_DIR` | your library — normally set via `config.json`, which wins over `.env`. Set here it becomes the default the first-run prompt offers |
 | `DATA_DIR` | where `cache.json` and `overrides.json` live (default `data`) |
 | `HOST` / `PORT` | server bind address |
 | `TMDB_LANGUAGE` / `MAX_CONCURRENCY` | metadata language, parallel request cap |
 
+Settings are read from, highest priority first: real environment variables, `config.json`, `.env`.
+Relative paths resolve from the project root.
+
 ## Use
 
 ```powershell
+python main.py             # set up if needed, then serve on http://127.0.0.1:8000
 python manage.py sync      # fetch metadata for new folders, drop deleted ones
-python manage.py serve     # http://127.0.0.1:8000
+python manage.py serve     # serve only, no setup or frontend build
 ```
 
 ### Commands
@@ -141,9 +169,12 @@ build, `python manage.py serve` alone runs the whole app.
 ## Layout
 
 ```
+main.py               start everything: config.json, frontend build, server
 manage.py             CLI entry point
+config.json           your library location (gitignored, see config.example.json)
 backend/app/
-  config.py           settings from .env
+  config.py           settings from config.json and .env
+  setup.py            first-run folder prompt and frontend build
   scanner.py          library scan + folder-name parsing
   tmdb.py             TMDB client and match scoring
   cache.py            atomic JSON persistence

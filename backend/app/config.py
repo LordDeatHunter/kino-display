@@ -1,21 +1,41 @@
-"""Application settings, loaded from the project-root .env file."""
+"""Application settings, loaded from config.json and the project-root .env file."""
 
 from __future__ import annotations
 
+import json
+import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, JsonConfigSettingsSource, SettingsConfigDict
+from pydantic_settings.sources import DotEnvSettingsSource, PydanticBaseSettingsSource
 
 # backend/app/config.py -> backend/app -> backend -> project root
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# Written by `python main.py`; see config.example.json.
+CONFIG_PATH = PROJECT_ROOT / "config.json"
+
+
+class _TolerantJsonSource(JsonConfigSettingsSource):
+    """Ignore a missing/corrupt config.json instead of failing every command."""
+
+    def _read_file(self, file_path: Any) -> dict[str, Any]:
+        try:
+            data = super()._read_file(file_path)
+        except (json.JSONDecodeError, OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
+        json_file=CONFIG_PATH,
+        json_file_encoding="utf-8",
         extra="ignore",
     )
 
@@ -30,6 +50,24 @@ class Settings(BaseSettings):
 
     tmdb_language: str = "en-US"
     max_concurrency: int = 8
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """config.json beats .env, but a real environment variable still wins."""
+        return (
+            init_settings,
+            env_settings,
+            _TolerantJsonSource(settings_cls),
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     @field_validator("movies_dir", "data_dir", mode="after")
     @classmethod
@@ -63,3 +101,16 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def env_movies_dir() -> str | None:
+    """MOVIES_DIR as supplied by the environment or .env — None if neither sets it.
+
+    This is the default the first-run prompt falls back to; with no default, main.py
+    insists on the folder picker.
+    """
+    raw = os.environ.get("MOVIES_DIR")
+    if raw is None:
+        value = DotEnvSettingsSource(Settings)().get("movies_dir")
+        raw = value if isinstance(value, str) else None
+    return (raw or "").strip() or None

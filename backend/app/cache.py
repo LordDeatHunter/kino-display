@@ -10,7 +10,8 @@ from pathlib import Path
 from .models import SCHEMA_VERSION, CacheFile
 
 
-def _write_atomic(path: Path, payload: str) -> None:
+def write_atomic(path: Path, payload: str) -> None:
+    """Write text so a crash mid-write can never leave a half-file behind."""
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=path.parent, prefix=path.name, suffix=".tmp", delete=False
@@ -41,7 +42,7 @@ def load_cache(path: Path) -> CacheFile:
 
 
 def save_cache(path: Path, cache: CacheFile) -> None:
-    _write_atomic(path, cache.model_dump_json(indent=2, exclude_none=False))
+    write_atomic(path, cache.model_dump_json(indent=2, exclude_none=False))
 
 
 def load_overrides(path: Path) -> dict[str, int | None]:
@@ -65,4 +66,4 @@ def load_overrides(path: Path) -> dict[str, int | None]:
 
 def save_overrides(path: Path, overrides: dict[str, int | None]) -> None:
     ordered = {key: overrides[key] for key in sorted(overrides, key=str.lower)}
-    _write_atomic(path, json.dumps(ordered, indent=2, ensure_ascii=False) + "\n")
+    write_atomic(path, json.dumps(ordered, indent=2, ensure_ascii=False) + "\n")
