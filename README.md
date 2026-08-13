@@ -138,6 +138,22 @@ picker. Choosing a field resets to its natural direction
 (titles A→Z, everything else best or newest first); the toggle then flips it. Films with no value
 for the chosen field always sort to the end, in either direction.
 
+### Opening a folder
+
+**📂 Folder** next to the TMDB and IMDb links opens that title's folder; with several copies it
+scrolls to the **On disk** list instead, where each copy has its own **📂 Open folder**. A loose
+video file is selected inside its folder rather than played — the app never opens the film itself.
+
+The folder opens on the machine *running the server*, not the one with the browser open. A web
+page cannot launch a file manager — a `file://` link from an `http://` page is blocked outright —
+so the server does it, which is the same desktop as long as you're browsing `127.0.0.1`. From
+another machine on the network the folder opens back on the host; the app says so and offers the
+path to copy instead.
+
+The request carries a folder name, not a path, and the name has to be one already in the cache
+and still inside a configured library folder — so the endpoint can't be pointed at anything else
+on the disk.
+
 ### Series
 
 A series folder is one show — `D:\Series\Breaking Bad (2008)`, `D:\Series\The.Office.US.S01-S09`.

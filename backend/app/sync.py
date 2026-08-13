@@ -26,7 +26,7 @@ def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
-def _under_any(path: str, roots: list[Path]) -> bool:
+def under_any(path: str, roots: list[Path]) -> bool:
     candidate = Path(path)
     return any(candidate.is_relative_to(root) for root in roots)
 
@@ -136,7 +136,7 @@ async def run_sync(
     # they live in is the thing that vanished, which is an unplugged drive, not 300
     # deletions.
     for dir_name, entry in list(cache.entries.items()):
-        if dir_name in by_name or _under_any(entry.path, offline):
+        if dir_name in by_name or under_any(entry.path, offline):
             continue
         del cache.entries[dir_name]
         report.removed.append(dir_name)

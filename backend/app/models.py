@@ -149,3 +149,14 @@ class ConfirmRequest(BaseModel):
 
     dir_names: list[str]
     kind: MediaKind = "movies"
+
+
+class OpenRequest(BaseModel):
+    """Show one library folder in the desktop file manager.
+
+    A folder name rather than a path: the endpoint can then only ever open something
+    the scanner itself put in the cache.
+    """
+
+    dir_name: str
+    kind: MediaKind = "movies"

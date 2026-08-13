@@ -1,7 +1,14 @@
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
-import { confirmMatches } from '../api'
+import { confirmMatches, openFolder } from '../api'
 import type { CacheEntry, MediaKind, TitleGroup } from '../types'
-import { entryNeedsAttention, formatRuntime, imageUrl, parsedYearSpread, yearOf } from '../util'
+import {
+  copyText,
+  entryNeedsAttention,
+  formatRuntime,
+  imageUrl,
+  parsedYearSpread,
+  yearOf,
+} from '../util'
 import FixMatch from './FixMatch'
 
 interface Props {
@@ -19,6 +26,12 @@ export default function MovieModal(props: Props) {
   const [posterBroken, setPosterBroken] = createSignal(false)
   const [confirming, setConfirming] = createSignal(false)
   const [openSeason, setOpenSeason] = createSignal<number | null>(null)
+  // The copy whose folder is being opened, so only that row's button greys out.
+  const [opening, setOpening] = createSignal<string | null>(null)
+  // Set only when a note is about a folder that would not open: the path the Copy
+  // button offers, and the reason the note is styled as a warning.
+  const [failedPath, setFailedPath] = createSignal<string | null>(null)
+  const [copied, setCopied] = createSignal(false)
   const movie = () => props.group.tmdb
   const isShow = () => movie()?.media_type === 'tv'
   const noun = () => (props.kind === 'series' ? 'show' : 'film')
@@ -71,6 +84,7 @@ export default function MovieModal(props: Props) {
     // The year is not decoration: a remake shares its original's title, so without it the
     // note names the very card you are still looking at.
     const moved = yearOf(entry) ? `“${entry.tmdb?.title}” (${yearOf(entry)})` : `“${entry.tmdb?.title}”`
+    setFailedPath(null) // this note is not about a folder that would not open
     setNote(
       entry.status === 'ignored'
         ? `${entry.dir_name} is ignored now and has dropped out of the library.`
@@ -78,10 +92,46 @@ export default function MovieModal(props: Props) {
     )
   }
 
+  const dismissNote = () => {
+    setNote('')
+    setFailedPath(null)
+  }
+
+  /** Ask the server's desktop to show this copy on disk. The browser cannot do it
+   *  itself, and for a localhost-only app that desktop is this one. */
+  const showOnDisk = async (entry: CacheEntry) => {
+    setOpening(entry.dir_name)
+    dismissNote()
+    setCopied(false)
+    try {
+      await openFolder(entry.dir_name, props.kind)
+    } catch (error) {
+      // The path goes in the note, not just the reason: if the server opened it on
+      // some other machine, copying it is the only thing left that helps.
+      setFailedPath(entry.path)
+      setNote(String(error).replace(/^Error:\s*/, ''))
+    } finally {
+      setOpening(null)
+    }
+  }
+
+  const copyFailedPath = async () => {
+    const path = failedPath()
+    if (path) setCopied(await copyText(path))
+  }
+
   /** One copy: open its form. Several: scroll to the list, which is the copy picker. */
   const openFix = () => {
     const entries = props.group.entries
     if (entries.length === 1) setFixing((open) => (open ? null : entries[0].dir_name))
+    else disk?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }
+
+  /** Same split as openFix: with one copy there is nothing to choose between, with
+   *  several the copies list is the picker. */
+  const openFolderFromHeader = () => {
+    const entries = props.group.entries
+    if (entries.length === 1) void showOnDisk(entries[0])
     else disk?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }
 
@@ -187,6 +237,9 @@ export default function MovieModal(props: Props) {
                     IMDb
                   </a>
                 </Show>
+                <button type="button" class="linklike" onClick={openFolderFromHeader}>
+                  📂 {props.group.entries.length === 1 ? 'Folder' : 'Folders'}
+                </button>
                 <button type="button" class="linklike" onClick={openFix}>
                   {fixLabel(`Wrong ${noun()}?`, 'Hide match tools')}
                 </button>
@@ -195,9 +248,14 @@ export default function MovieModal(props: Props) {
           </div>
 
           <Show when={note()}>
-            <p class="inline-note">
+            <p class="inline-note" classList={{ warn: !!failedPath() }}>
               {note()}
-              <button type="button" class="linklike" onClick={() => setNote('')}>
+              <Show when={failedPath()}>
+                <button type="button" class="linklike" onClick={copyFailedPath}>
+                  {copied() ? 'Copied' : 'Copy path'}
+                </button>
+              </Show>
+              <button type="button" class="linklike" onClick={dismissNote}>
                 Dismiss
               </button>
             </p>
@@ -376,6 +434,16 @@ export default function MovieModal(props: Props) {
                       <Show when={entry.status !== 'matched'}> · {entry.status}</Show>
                     </span>
                     <div class="copy-actions">
+                      <button
+                        type="button"
+                        class="ghost"
+                        disabled={opening() === entry.dir_name}
+                        onClick={() => showOnDisk(entry)}
+                      >
+                        {/* A loose video file is selected inside its folder rather
+                            than played — this app never opens the film itself. */}
+                        📂 {entry.is_file ? 'Show in folder' : 'Open folder'}
+                      </button>
                       <Show when={entryNeedsAttention(entry) && entry.tmdb}>
                         <button
                           type="button"

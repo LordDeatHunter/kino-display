@@ -5,6 +5,38 @@ import type { CacheEntry, TitleGroup } from './types'
 export const imageUrl = (path: string | null | undefined, size: string) =>
   path ? `/api/img/${size}${path.startsWith('/') ? path : `/${path}`}` : null
 
+/** Put `text` on the clipboard, reporting whether it landed.
+ *
+ *  The execCommand fallback is the point rather than politeness: navigator.clipboard
+ *  only exists in a secure context, so it is undefined over http://192.168.x.x:8000 —
+ *  exactly the LAN case where the server opened a folder on the wrong desktop and
+ *  copying the path is all that is left. */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // Denied or unavailable — try the old way before giving up.
+  }
+
+  const field = document.createElement('textarea')
+  field.value = text
+  field.setAttribute('readonly', '')
+  field.style.position = 'fixed'
+  field.style.opacity = '0'
+  document.body.appendChild(field)
+  try {
+    field.select()
+    return document.execCommand('copy')
+  } catch {
+    return false
+  } finally {
+    field.remove()
+  }
+}
+
 export function formatRuntime(minutes: number | null): string {
   if (!minutes) return ''
   const hours = Math.floor(minutes / 60)

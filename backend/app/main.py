@@ -14,8 +14,16 @@ from fastapi.staticfiles import StaticFiles
 from .cache import load_cache, load_overrides, save_cache, save_overrides
 from .config import MEDIA_KINDS, MediaKind, get_settings
 from .images import ImageError, ImageNotFound, fetch_image
-from .models import CacheEntry, CacheFile, ConfirmRequest, OverrideRequest, SyncStatus
-from .sync import read_cache, resolve_single, run_sync
+from .models import (
+    CacheEntry,
+    CacheFile,
+    ConfirmRequest,
+    OpenRequest,
+    OverrideRequest,
+    SyncStatus,
+)
+from .reveal import RevealError, reveal
+from .sync import read_cache, resolve_single, run_sync, under_any
 from .tmdb import TmdbClient, TmdbError
 
 app = FastAPI(title="Movielister", version="1.0.0")
@@ -229,6 +237,40 @@ def confirm_matches(request: ConfirmRequest) -> list[CacheEntry]:
     save_overrides(overrides_path, overrides)
     save_cache(cache_path, cache)
     return confirmed
+
+
+# Sync, not async: launching the file manager blocks briefly, and a `def` route runs
+# in FastAPI's threadpool rather than stalling the event loop.
+@app.post("/api/open")
+def open_folder(request: OpenRequest) -> dict[str, str]:
+    """Show a folder in the file manager of the machine running the server.
+
+    Localhost-only, so that machine is the one whose browser did the clicking.
+    """
+    settings = get_settings()
+    entry = read_cache(settings, request.kind).entries.get(request.dir_name)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"No such folder: {request.dir_name}")
+
+    target = Path(entry.path)
+    if not under_any(entry.path, settings.library_dirs(request.kind)):
+        raise HTTPException(
+            status_code=403,
+            detail=f"{target} is not inside a configured {request.kind} folder",
+        )
+    # An entry whose drive is unplugged stays in the cache on purpose (see run_sync),
+    # so a path that is simply not there right now is the common failure here.
+    if not target.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"{target} is not there right now — the drive may be disconnected.",
+        )
+
+    try:
+        reveal(target)
+    except RevealError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"path": str(target)}
 
 
 def _mount_frontend() -> None:

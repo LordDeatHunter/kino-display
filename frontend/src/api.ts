@@ -7,11 +7,23 @@ import type {
   SyncStatus,
 } from './types'
 
+/** FastAPI puts the human-readable half of an error in a JSON `detail`; unwrap it so
+ *  messages shown in the UI read as sentences rather than as a serialised body. */
+function errorMessage(status: number, statusText: string, body: string): string {
+  try {
+    const detail = (JSON.parse(body) as { detail?: unknown }).detail
+    if (typeof detail === 'string' && detail) return detail
+  } catch {
+    // not JSON — fall through to the raw body
+  }
+  return `${status} ${statusText} ${body.slice(0, 200)}`.trim()
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init)
   if (!response.ok) {
-    const detail = await response.text().catch(() => '')
-    throw new Error(`${response.status} ${response.statusText} ${detail.slice(0, 200)}`)
+    const body = await response.text().catch(() => '')
+    throw new Error(errorMessage(response.status, response.statusText, body))
   }
   return (await response.json()) as T
 }
@@ -54,6 +66,16 @@ export const confirmMatches = (dirNames: string[], kind: MediaKind) =>
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ dir_names: dirNames, kind }),
+  })
+
+/** Show this folder in the file manager of the machine running the server — which,
+ *  for a localhost-only app, is the one you are sitting at. The browser cannot do it:
+ *  a file:// link from an http:// page is blocked outright. */
+export const openFolder = (dirName: string, kind: MediaKind) =>
+  request<{ path: string }>('/api/open', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ dir_name: dirName, kind }),
   })
 
 export const clearOverride = (dirName: string, kind: MediaKind) =>
