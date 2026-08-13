@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
+import { For, Show, batch, createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import { confirmMatches, fetchLibrary, fetchStats, fetchSyncStatus, startSync } from './api'
 import MovieCard from './components/MovieCard'
@@ -101,9 +101,29 @@ function createLibrary(kind: MediaKind) {
   }
 
   const applyEntry = (entry: CacheEntry) => {
-    setCache(produce((draft) => {
-      draft.entries[entry.dir_name] = entry
-    }))
+    const previousId = cache.entries[entry.dir_name]?.tmdb?.id ?? null
+    const nextId = entry.tmdb?.id ?? null
+    // A copy reassigned to a different film leaves the card it was on. Stay on the card
+    // the user opened by anchoring to a copy that stayed; if none did, following the move
+    // is the confirmation they want.
+    const anchor =
+      previousId !== null && nextId !== previousId && selected() === entry.dir_name
+        ? Object.values(cache.entries).find(
+            (other) =>
+              other.dir_name !== entry.dir_name &&
+              other.status !== 'ignored' &&
+              other.tmdb?.id === previousId,
+          )?.dir_name
+        : undefined
+
+    // One batch, deliberately: between the two writes `selected` would point at an entry
+    // that no longer groups anywhere, flipping the modal's <Show> false and tearing it down.
+    batch(() => {
+      setCache(produce((draft) => {
+        draft.entries[entry.dir_name] = entry
+      }))
+      if (anchor) setSelected(anchor)
+    })
   }
 
   const allGroups = createMemo(() => groupEntries(Object.values(cache.entries)))

@@ -869,6 +869,52 @@ select {
   color: var(--muted);
 }
 
+/* The reassign panel renders below the whole list, so the row it belongs to says so. */
+.paths li.copy-active {
+  border-color: var(--accent);
+}
+
+/* A copy row reads path → match meta → what you can do about it. */
+.copy-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 9px;
+}
+
+.copy-actions button {
+  font-size: 12px;
+  padding: 5px 10px;
+}
+
+/* Sits inside the modal, unlike .notice which is a centred empty-state for the grid. */
+.inline-note {
+  margin: 16px 0 0;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 13.5px;
+  color: var(--muted);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.inline-note.warn {
+  display: block;
+  border-color: #4a3a1d;
+  border-left-color: var(--warn);
+  background: rgb(240 166 58 / 0.07);
+}
+
+.section .inline-note {
+  margin: 0 0 12px;
+}
+
 /* ---------- fix match ---------- */
 
 .fixmatch {
@@ -877,6 +923,13 @@ select {
   padding: 14px;
   margin-bottom: 12px;
   background: var(--bg);
+}
+
+/* In the copies list the panel belongs to the row you just clicked, so it hangs off the
+   bottom of the list rather than reading as another card. */
+.paths + .fixmatch {
+  margin: 10px 0 0;
+  background: var(--bg-raised);
 }
 
 .fixmatch-head {

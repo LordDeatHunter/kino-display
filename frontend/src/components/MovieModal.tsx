@@ -1,7 +1,7 @@
-import { For, Show, createSignal, onCleanup, onMount } from 'solid-js'
+import { For, Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
 import { confirmMatches } from '../api'
 import type { CacheEntry, MediaKind, TitleGroup } from '../types'
-import { entryNeedsAttention, formatRuntime, imageUrl } from '../util'
+import { entryNeedsAttention, formatRuntime, imageUrl, parsedYearSpread, yearOf } from '../util'
 import FixMatch from './FixMatch'
 
 interface Props {
@@ -12,17 +12,22 @@ interface Props {
 }
 
 export default function MovieModal(props: Props) {
-  const [showFix, setShowFix] = createSignal(false)
+  // The folder whose search form is open — one at a time, so several copies of the same
+  // title can't present a row of identical-looking forms.
+  const [fixing, setFixing] = createSignal<string | null>(null)
+  const [note, setNote] = createSignal('')
   const [posterBroken, setPosterBroken] = createSignal(false)
   const [confirming, setConfirming] = createSignal(false)
   const [openSeason, setOpenSeason] = createSignal<number | null>(null)
   const movie = () => props.group.tmdb
   const isShow = () => movie()?.media_type === 'tv'
   const noun = () => (props.kind === 'series' ? 'show' : 'film')
+  let disk: HTMLElement | undefined
 
   const flagged = () => props.group.entries.filter(entryNeedsAttention)
   const worstConfidence = () =>
     Math.min(...props.group.entries.map((entry) => entry.match_confidence))
+  const yearSpread = createMemo(() => parsedYearSpread(props.group.entries))
 
   const accept = async () => {
     setConfirming(true)
@@ -36,6 +41,54 @@ export default function MovieModal(props: Props) {
       setConfirming(false)
     }
   }
+
+  const acceptOne = async (entry: CacheEntry) => {
+    setConfirming(true)
+    try {
+      const updated = await confirmMatches([entry.dir_name], props.kind)
+      updated.forEach(props.onEntryUpdated)
+    } finally {
+      setConfirming(false)
+    }
+  }
+
+  /** A reassigned copy leaves this group, taking its row — and any message inside the
+   *  form — with it, so the modal is the only thing left to explain where it went. */
+  const applied = (entry: CacheEntry) => {
+    // Read everything BEFORE the update: once the group has emptied, <Show>'s non-keyed
+    // accessor throws a stale read on props.group.
+    const before = props.group.entries.find((item) => item.dir_name === entry.dir_name)
+    const leaving = !!before?.tmdb && entry.tmdb?.id !== before.tmdb.id
+    const cardSurvives = props.group.entries.some(
+      (item) => item.dir_name !== entry.dir_name && item.status !== 'ignored',
+    )
+
+    props.onEntryUpdated(entry)
+
+    if (!leaving) return
+    setFixing(null)
+    if (!cardSurvives) return // the modal followed the move — there is nothing to explain
+    // The year is not decoration: a remake shares its original's title, so without it the
+    // note names the very card you are still looking at.
+    const moved = yearOf(entry) ? `“${entry.tmdb?.title}” (${yearOf(entry)})` : `“${entry.tmdb?.title}”`
+    setNote(
+      entry.status === 'ignored'
+        ? `${entry.dir_name} is ignored now and has dropped out of the library.`
+        : `${entry.dir_name} is now ${moved} — it has its own card.`,
+    )
+  }
+
+  /** One copy: open its form. Several: scroll to the list, which is the copy picker. */
+  const openFix = () => {
+    const entries = props.group.entries
+    if (entries.length === 1) setFixing((open) => (open ? null : entries[0].dir_name))
+    else disk?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }
+
+  /** With one copy the links toggle a form and should say so; with several they only
+   *  scroll to the list, where each row carries its own label. */
+  const fixLabel = (closed: string, open: string) =>
+    props.group.entries.length === 1 && fixing() ? open : closed
 
   const onKey = (event: KeyboardEvent) => {
     if (event.key === 'Escape') props.onClose()
@@ -134,12 +187,21 @@ export default function MovieModal(props: Props) {
                     IMDb
                   </a>
                 </Show>
-                <button type="button" class="linklike" onClick={() => setShowFix((value) => !value)}>
-                  {showFix() ? 'Hide match tools' : `Wrong ${noun()}?`}
+                <button type="button" class="linklike" onClick={openFix}>
+                  {fixLabel(`Wrong ${noun()}?`, 'Hide match tools')}
                 </button>
               </p>
             </div>
           </div>
+
+          <Show when={note()}>
+            <p class="inline-note">
+              {note()}
+              <button type="button" class="linklike" onClick={() => setNote('')}>
+                Dismiss
+              </button>
+            </p>
+          </Show>
 
           <Show when={props.group.needsAttention}>
             <div class="verify">
@@ -156,21 +218,26 @@ export default function MovieModal(props: Props) {
                       : ''}
                     , so it's worth a glance. Accepting pins it — the flag clears and a
                     re-sync won't change it.
+                    <Show when={yearSpread().length > 1}>
+                      {' '}
+                      These copies are labelled with different years — check them one at a
+                      time below.
+                    </Show>
                   </span>
                 </Show>
               </div>
               <div class="verify-actions">
                 <Show when={movie()}>
                   <button type="button" disabled={confirming()} onClick={accept}>
-                    {confirming() ? 'Accepting…' : '✓ Looks right'}
+                    {confirming()
+                      ? 'Accepting…'
+                      : flagged().length > 1
+                        ? `✓ All ${flagged().length} copies are this ${noun()}`
+                        : '✓ Looks right'}
                   </button>
                 </Show>
-                <button
-                  type="button"
-                  class="ghost"
-                  onClick={() => setShowFix((value) => !value)}
-                >
-                  {showFix() ? 'Hide search' : `Pick a different ${noun()}`}
+                <button type="button" class="ghost" onClick={openFix}>
+                  {fixLabel(`Pick a different ${noun()}`, 'Hide search')}
                 </button>
               </div>
             </div>
@@ -286,35 +353,62 @@ export default function MovieModal(props: Props) {
             </section>
           </Show>
 
-          <section class="section">
+          <section class="section" ref={disk}>
             <h3>
               {props.group.entries.length > 1 ? `${props.group.entries.length} copies on disk` : 'On disk'}
             </h3>
+
+            <Show when={yearSpread().length > 1}>
+              <p class="inline-note warn">
+                These copies are labelled with different years ({yearSpread().join(', ')}) — they
+                may be different {noun()}s. Reassign one to split it onto its own card.
+              </p>
+            </Show>
+
             <ul class="paths">
               <For each={props.group.entries}>
                 {(entry) => (
-                  <li>
+                  <li classList={{ 'copy-active': fixing() === entry.dir_name }}>
                     <code>{entry.path}</code>
                     <span class="path-meta">
                       matched as {entry.source} · confidence {entry.match_confidence.toFixed(2)}
                       <Show when={entry.low_confidence}> · low confidence</Show>
                       <Show when={entry.status !== 'matched'}> · {entry.status}</Show>
                     </span>
+                    <div class="copy-actions">
+                      <Show when={entryNeedsAttention(entry) && entry.tmdb}>
+                        <button
+                          type="button"
+                          disabled={confirming()}
+                          onClick={() => acceptOne(entry)}
+                        >
+                          ✓ Correct
+                        </button>
+                      </Show>
+                      <button
+                        type="button"
+                        class="ghost"
+                        onClick={() =>
+                          setFixing((open) => (open === entry.dir_name ? null : entry.dir_name))
+                        }
+                      >
+                        {fixing() === entry.dir_name ? 'Cancel' : 'Reassign…'}
+                      </button>
+                    </div>
                   </li>
                 )}
               </For>
             </ul>
-          </section>
 
-          <Show when={showFix()}>
-            <section class="section">
-              <For each={props.group.entries}>
-                {(entry) => (
-                  <FixMatch entry={entry} kind={props.kind} onApplied={props.onEntryUpdated} />
-                )}
-              </For>
-            </section>
-          </Show>
+            {/* One panel outside the <For>: that list is keyed by entry reference, so a
+                form nested in a row would be thrown away and rebuilt — losing the typed
+                query and its results — every time any copy is updated. */}
+            <Show when={props.group.entries.find((entry) => entry.dir_name === fixing())}>
+              {(entry) => (
+                <FixMatch entry={entry()} kind={props.kind} onApplied={applied} />
+              )}
+            </Show>
+          </section>
         </div>
       </div>
     </div>

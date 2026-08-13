@@ -9,6 +9,15 @@ interface Props {
   onApplied: (entry: CacheEntry) => void
 }
 
+/** The override is saved before the folder is re-resolved, so a folder that has since
+ *  vanished from disk answers with a bare 404. It self-heals on the next sync. */
+const readable = (error: unknown) => {
+  const text = String(error)
+  return text.includes('No such folder')
+    ? "That folder isn't on disk any more — run a sync."
+    : text
+}
+
 export default function FixMatch(props: Props) {
   const [query, setQuery] = createSignal(props.entry.parsed_title)
   const [results, setResults] = createSignal<SearchResult[]>([])
@@ -41,7 +50,7 @@ export default function FixMatch(props: Props) {
       setResults([])
       setMessage(tmdbId === null ? 'Folder is now ignored.' : `Pinned to TMDB #${tmdbId}.`)
     } catch (error) {
-      setMessage(String(error))
+      setMessage(readable(error))
     } finally {
       setBusy(false)
     }
@@ -54,7 +63,7 @@ export default function FixMatch(props: Props) {
       props.onApplied(updated)
       setMessage('Override removed — re-matched by search.')
     } catch (error) {
-      setMessage(String(error))
+      setMessage(readable(error))
     } finally {
       setBusy(false)
     }
@@ -62,8 +71,10 @@ export default function FixMatch(props: Props) {
 
   return (
     <div class="fixmatch">
+      {/* Names the folder being reassigned: the panel sits below the whole copies list,
+          so with several copies nothing else says which one this is. */}
       <div class="fixmatch-head">
-        <strong>Fix match</strong>
+        <strong>Reassigning</strong>
         <code class="folder">{props.entry.dir_name}</code>
       </div>
 

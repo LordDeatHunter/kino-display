@@ -21,10 +21,29 @@ export const yearOf = (entry: CacheEntry): number | null => {
 export const entryNeedsAttention = (entry: CacheEntry) =>
   entry.status !== 'matched' || entry.low_confidence
 
-/** Flagged folders that do have a match — the ones "accept" applies to. */
+/** Distinct years the folder names claim. More than one across copies of the "same"
+ *  film usually means an original and a remake got merged onto one card.
+ *
+ *  Deliberately `parsed_year` and not `yearOf`: the latter prefers the TMDB release
+ *  date, which is identical for every entry in a `tmdb:` group, so it always yields
+ *  exactly one value and can never spot a disagreement. */
+export const parsedYearSpread = (entries: CacheEntry[]): number[] => {
+  const years = entries
+    .map((entry) => entry.parsed_year)
+    .filter((year): year is number => year !== null)
+  return [...new Set(years)].sort((a, b) => a - b)
+}
+
+/** Flagged folders that do have a match — the ones "accept" applies to.
+ *
+ *  Groups whose copies disagree about the year are left out on purpose: accepting in
+ *  bulk pins every copy to the same id and clears the only hint the merge was wrong.
+ *  They stay fixable one copy at a time in the modal. */
 export const confirmableEntries = (groups: TitleGroup[]): string[] =>
   groups
-    .filter((group) => group.needsAttention && group.tmdb)
+    .filter(
+      (group) => group.needsAttention && group.tmdb && parsedYearSpread(group.entries).length < 2,
+    )
     .flatMap((group) => group.entries.filter(entryNeedsAttention).map((entry) => entry.dir_name))
 
 /** Collapse folders that resolved to the same film into a single card. */
